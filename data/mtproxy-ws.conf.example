@@ -1,0 +1,6 @@
+# Options passed to mtproxy-ws by the systemd service. Copy to
+# <sysconfdir>/mtproxy-ws.conf (e.g. /etc/mtproxy-ws.conf) and edit, then
+# `systemctl enable --now mtproxy-ws`.
+#
+# Generate a secret: `head -c16 /dev/urandom | xxd -p`
+MTPROXY_WS_ARGS="--host 0.0.0.0 --port 1443 --secret CHANGEME32HEXCHARS0000000000000000"

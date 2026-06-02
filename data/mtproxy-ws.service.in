@@ -1,0 +1,22 @@
+[Unit]
+Description=Telegram MTProto <-> WebSocket bridge proxy
+Documentation=https://github.com/Another-TGProxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Put your options here, e.g. MTPROXY_WS_ARGS="--port 1443 --secret <32hex>"
+EnvironmentFile=-@sysconfdir@/mtproxy-ws.conf
+ExecStart=@bindir@/mtproxy-ws $MTPROXY_WS_ARGS
+Restart=on-failure
+RestartSec=3
+# Run as a transient unprivileged user (port 1443 is non-privileged).
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

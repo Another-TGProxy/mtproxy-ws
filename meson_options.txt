@@ -1,0 +1,2 @@
+option('service', type: 'boolean', value: false,
+  description: 'Install a systemd system service (mtproxy-ws.service, not enabled by default).')
