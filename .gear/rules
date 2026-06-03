@@ -1,0 +1,2 @@
+tar: . name=@name@-@version@
+spec: .gear/mtproxy-ws.spec
