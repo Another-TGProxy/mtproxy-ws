@@ -10,6 +10,12 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 
+/* macOS lacks MSG_NOSIGNAL; SIGPIPE is suppressed there via SO_NOSIGPIPE on the
+ * socket (set in tcp_connect_host) and SIG_IGN in the executables. */
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 gboolean
 fd_read_exact (int fd, unsigned char *buf, size_t n)
 {
@@ -67,6 +73,9 @@ tcp_connect_host (const char *host, int port)
     if (fd >= 0) {
         int one = 1;
         setsockopt (fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof (one));
+#ifdef SO_NOSIGPIPE
+        setsockopt (fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof (one));
+#endif
     }
     return fd;
 }
