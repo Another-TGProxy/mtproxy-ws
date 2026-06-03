@@ -309,6 +309,13 @@ listen_loop (gpointer data)
             close (cfd);
             break;
         }
+#ifdef SO_NOSIGPIPE
+        /* macOS: suppress SIGPIPE on writes to this client (no MSG_NOSIGNAL). */
+        {
+            int one = 1;
+            setsockopt (cfd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof (one));
+        }
+#endif
         ConnArgs *args = g_new0 (ConnArgs, 1);
         args->proxy = p;
         args->client_fd = cfd;
