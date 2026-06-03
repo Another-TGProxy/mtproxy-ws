@@ -19,10 +19,20 @@ core_inc = include_directories('src')
 
 libmtproxyws = library('mtproxyws',
   'src/crypto.c',
+  'src/net.c',
+  'src/mtproto.c',
+  'src/splitter.c',
+  'src/websocket.c',
+  'src/fake_tls.c',
+  'src/client_io.c',
+  'src/pool.c',
+  'src/bridge.c',
   'src/proxy.c',
   dependencies: core_deps,
   include_directories: core_inc,
   version: meson.project_version(),
+  # Hidden by default: only TGWS_PUBLIC-marked symbols leave the .so.
+  gnu_symbol_visibility: 'hidden',
   install: true,
 )
 
