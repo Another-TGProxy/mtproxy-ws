@@ -34,6 +34,8 @@ pkgconfig.generate(libmtproxyws,
   description: 'Telegram MTProto <-> WebSocket bridge proxy engine',
   subdirs: 'mtproxy-ws',
   requires: ['glib-2.0', 'gio-2.0'],
+  # Expose the Vala binding location so consumers can add it to --vapidir.
+  variables: ['vapidir=${prefix}/' + get_option('datadir') / 'vala' / 'vapi'],
 )
 
 # Vala binding ships with the library (conventional): vapi + .deps in vapidir.

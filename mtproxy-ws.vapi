@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* Vala binding for the mtproxy-ws C engine (proxy.h). */
 namespace TgWsProxy {
 

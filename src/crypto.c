@@ -20,16 +20,14 @@ tgws_aesctr_new (const unsigned char *key32, const unsigned char *iv16)
     return c;
 }
 
-void
-tgws_aesctr_update (TgwsAesCtr *c, const unsigned char *in,
-                    unsigned char *out, int len)
+void tgws_aesctr_update (TgwsAesCtr *c, const unsigned char *in,
+                         unsigned char *out, int len)
 {
     int outl = 0;
     EVP_EncryptUpdate (c->ctx, out, &outl, in, len);
 }
 
-void
-tgws_aesctr_free (TgwsAesCtr *c)
+void tgws_aesctr_free (TgwsAesCtr *c)
 {
     if (c == NULL)
         return;

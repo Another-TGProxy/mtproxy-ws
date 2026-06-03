@@ -7,8 +7,8 @@
 typedef struct _TgwsAesCtr TgwsAesCtr;
 
 TgwsAesCtr *tgws_aesctr_new (const unsigned char *key32, const unsigned char *iv16);
-void        tgws_aesctr_update (TgwsAesCtr *c, const unsigned char *in,
-                                unsigned char *out, int len);
-void        tgws_aesctr_free (TgwsAesCtr *c);
+void tgws_aesctr_update (TgwsAesCtr *c, const unsigned char *in,
+                         unsigned char *out, int len);
+void tgws_aesctr_free (TgwsAesCtr *c);
 
 #endif

@@ -42,10 +42,10 @@ gboolean tgws_proxy_start (TgwsProxy *self);
 void tgws_proxy_stop (TgwsProxy *self);
 
 /* Live stats (thread-safe). */
-gint64 tgws_proxy_connections_total  (TgwsProxy *self);
+gint64 tgws_proxy_connections_total (TgwsProxy *self);
 gint64 tgws_proxy_connections_active (TgwsProxy *self);
-gint64 tgws_proxy_bytes_up           (TgwsProxy *self);
-gint64 tgws_proxy_bytes_down         (TgwsProxy *self);
+gint64 tgws_proxy_bytes_up (TgwsProxy *self);
+gint64 tgws_proxy_bytes_down (TgwsProxy *self);
 
 void tgws_proxy_free (TgwsProxy *self);
 

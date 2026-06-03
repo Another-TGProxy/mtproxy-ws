@@ -40,15 +40,20 @@ random_secret_hex (void)
 {
     unsigned char r[16];
     FILE *f = fopen ("/dev/urandom", "rb");
-    if (f) { size_t n = fread (r, 1, 16, f); (void) n; fclose (f); }
-    else for (int i = 0; i < 16; i++) r[i] = (unsigned char) g_random_int ();
+    if (f) {
+        size_t n = fread (r, 1, 16, f);
+        (void) n;
+        fclose (f);
+    } else
+        for (int i = 0; i < 16; i++)
+            r[i] = (unsigned char) g_random_int ();
     GString *s = g_string_new (NULL);
-    for (int i = 0; i < 16; i++) g_string_append_printf (s, "%02x", r[i]);
+    for (int i = 0; i < 16; i++)
+        g_string_append_printf (s, "%02x", r[i]);
     return g_string_free (s, FALSE);
 }
 
-int
-main (int argc, char **argv)
+int main (int argc, char **argv)
 {
     gchar *host = NULL, *secret = NULL, *fake_tls = NULL;
     gint port = 1443, pool_size = 4;
@@ -93,7 +98,10 @@ main (int argc, char **argv)
     if (dc_ips) {
         for (int i = 0; dc_ips[i]; i++) {
             char *colon = strchr (dc_ips[i], ':');
-            if (colon) { *colon = '\0'; tgws_proxy_add_dc (p, atoi (dc_ips[i]), colon + 1); }
+            if (colon) {
+                *colon = '\0';
+                tgws_proxy_add_dc (p, atoi (dc_ips[i]), colon + 1);
+            }
         }
     } else {
         tgws_proxy_add_dc (p, 2, "149.154.167.220");
@@ -101,8 +109,12 @@ main (int argc, char **argv)
     }
     tgws_proxy_set_cfproxy (p, !no_cfproxy);
     tgws_proxy_set_verify_cf (p, !no_verify_cf);
-    if (cf_domains) for (int i = 0; cf_domains[i]; i++) tgws_proxy_add_cf_domain (p, cf_domains[i]);
-    if (worker_domains) for (int i = 0; worker_domains[i]; i++) tgws_proxy_add_worker_domain (p, worker_domains[i]);
+    if (cf_domains)
+        for (int i = 0; cf_domains[i]; i++)
+            tgws_proxy_add_cf_domain (p, cf_domains[i]);
+    if (worker_domains)
+        for (int i = 0; worker_domains[i]; i++)
+            tgws_proxy_add_worker_domain (p, worker_domains[i]);
     if (fake_tls) tgws_proxy_set_fake_tls (p, fake_tls);
     tgws_proxy_set_pool_size (p, pool_size);
 
