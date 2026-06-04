@@ -54,6 +54,21 @@ install_data('mtproxy-ws.vapi',
 install_data('mtproxy-ws.deps',
   install_dir: get_option('datadir') / 'vala' / 'vapi')
 
+# Usable as a meson subproject (e.g. the Android build pulls the core via a wrap):
+# the vapidir variable lets the consumer add mtproxy-ws.vapi to valac's path.
+mtproxyws_dep = declare_dependency(
+  link_with: libmtproxyws,
+  include_directories: core_inc,
+  dependencies: core_deps,
+  variables: {'vapidir': meson.current_source_dir()},
+)
+meson.override_dependency('mtproxy-ws', mtproxyws_dep)
+
+# The standalone CLI + systemd service are only meaningful when mtproxy-ws is the
+# top-level project. As a subproject (the Android GUI embeds the engine) we want
+# the library alone — skip the CLI (and its install) and the unit.
+if not meson.is_subproject()
+
 # Standalone headless CLI.
 executable('mtproxy-ws',
   'src/cli.c',
@@ -87,3 +102,5 @@ if get_option('service')
   install_data('data/mtproxy-ws.conf.example',
     install_dir: get_option('datadir') / 'doc' / 'mtproxy-ws')
 endif
+
+endif  # not meson.is_subproject()
