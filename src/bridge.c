@@ -2,10 +2,9 @@
 #include "bridge.h"
 #include "proxy-internal.h"
 #include "net.h"
+#include "compat.h"
 
 #include <errno.h>
-#include <poll.h>
-#include <sys/socket.h>
 
 #define READ_CHUNK 65536
 

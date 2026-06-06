@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "pool.h"
 #include "proxy-internal.h"
-
-#include <poll.h>
+#include "compat.h"
 
 #define POOL_KEY(dc, media) GINT_TO_POINTER (((dc) << 1) | ((media) ? 1 : 0))
 #define POOL_MAX_AGE_US     (120LL * 1000000)

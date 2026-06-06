@@ -1,19 +1,27 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "net.h"
+#include "compat.h"
 
 #include <string.h>
 #include <errno.h>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
-#include <netdb.h>
 
 /* macOS lacks MSG_NOSIGNAL; SIGPIPE is suppressed there via SO_NOSIGPIPE on the
  * socket (set in tcp_connect_host) and SIG_IGN in the executables. */
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
+#endif
+
+#ifdef _WIN32
+void
+tgws_net_init (void)
+{
+    static gsize once = 0;
+    if (g_once_init_enter (&once)) {
+        WSADATA wsa;
+        WSAStartup (MAKEWORD (2, 2), &wsa);
+        g_once_init_leave (&once, 1);
+    }
+}
 #endif
 
 gboolean
@@ -66,7 +74,7 @@ tcp_connect_host (const char *host, int port)
             continue;
         if (connect (fd, ai->ai_addr, ai->ai_addrlen) == 0)
             break;
-        close (fd);
+        close_socket (fd);
         fd = -1;
     }
     freeaddrinfo (res);

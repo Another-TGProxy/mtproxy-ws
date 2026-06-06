@@ -1,12 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "fake_tls.h"
 #include "net.h"
+#include "compat.h"
 
 #include <string.h>
 #include <errno.h>
-#include <unistd.h>
-#include <poll.h>
-#include <sys/socket.h>
 #include <time.h>
 
 #include <openssl/evp.h>
@@ -142,5 +140,5 @@ masking_passthrough (int client_fd, const char *domain,
             break;
     }
     g_free (buf);
-    close (up);
+    close_socket (up);
 }

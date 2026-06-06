@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "websocket.h"
 #include "net.h"
+#include "compat.h"
 
 #include <string.h>
-#include <unistd.h>
 
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -83,7 +83,7 @@ ws_connect_host (const char *connect_host, const char *sni, const char *path,
     }
     if (SSL_connect (ssl) != 1) {
         SSL_free (ssl);
-        close (fd);
+        close_socket (fd);
         return NULL;
     }
 
@@ -147,7 +147,7 @@ ws_free (WsConn *ws)
         SSL_free (ws->ssl);
     }
     if (ws->fd >= 0)
-        close (ws->fd);
+        close_socket (ws->fd);
     g_free (ws);
 }
 

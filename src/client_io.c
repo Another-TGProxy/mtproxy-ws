@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "client_io.h"
 #include "net.h"
+#include "compat.h"
 
 #include <string.h>
-#include <sys/socket.h>
 
 /* Read one more TLS appdata record into rbuf (skips CCS). FALSE on EOF/non-data. */
 static gboolean

@@ -10,15 +10,11 @@
 #include "pool.h"
 #include "bridge.h"
 #include "net.h"
+#include "compat.h"
 
 #include <string.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <errno.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
 
 #include <openssl/evp.h>
 
@@ -201,7 +197,7 @@ do_fallback (TgwsProxy *p, ClientIO *cio, int dc, gboolean media,
             g_message ("DC%d%s -> TCP fallback %s:443", dc, mtag, dst);
             if (fd_write_all (rfd, relay_init, HANDSHAKE_LEN))
                 tcp_bridge (p, cio, rfd, ctx);
-            close (rfd);
+            close_socket (rfd);
             return TRUE;
         }
     }
@@ -287,7 +283,7 @@ handle_client (gpointer data)
     serve_client (p, &cio);
 
     g_byte_array_free (cio.rbuf, TRUE);
-    close (client_fd);
+    close_socket (client_fd);
     stats_add (p, 0, -1, 0, 0);
     return NULL;
 }
@@ -306,7 +302,7 @@ listen_loop (gpointer data)
             break; /* listen_fd shut down */
         }
         if (!g_atomic_int_get (&p->running)) {
-            close (cfd);
+            close_socket (cfd);
             break;
         }
 #ifdef SO_NOSIGPIPE
@@ -330,6 +326,7 @@ listen_loop (gpointer data)
 TgwsProxy *
 tgws_proxy_new (const char *host, guint16 port, const unsigned char *secret16)
 {
+    tgws_net_init ();
     TgwsProxy *p = g_new0 (TgwsProxy, 1);
     p->host = g_strdup (host);
     p->port = port;
@@ -401,16 +398,16 @@ tgws_proxy_start (TgwsProxy *p)
     sa.sin_family = AF_INET;
     sa.sin_port = htons (p->port);
     if (inet_pton (AF_INET, p->host, &sa.sin_addr) != 1) {
-        close (fd);
+        close_socket (fd);
         return FALSE;
     }
     if (bind (fd, (struct sockaddr *) &sa, sizeof (sa)) != 0) {
         g_warning ("bind %s:%u failed: %s", p->host, p->port, g_strerror (errno));
-        close (fd);
+        close_socket (fd);
         return FALSE;
     }
     if (listen (fd, 128) != 0) {
-        close (fd);
+        close_socket (fd);
         return FALSE;
     }
     setsockopt (fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof (one));
@@ -430,7 +427,7 @@ void tgws_proxy_stop (TgwsProxy *p)
     g_atomic_int_set (&p->running, 0);
     if (p->listen_fd >= 0) {
         shutdown (p->listen_fd, SHUT_RDWR);
-        close (p->listen_fd);
+        close_socket (p->listen_fd);
         p->listen_fd = -1;
     }
     if (p->listen_thread) {

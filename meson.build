@@ -15,7 +15,14 @@ core_deps = [
   cc.find_library('crypto'),   # OpenSSL libcrypto (AES-CTR, SHA256, HMAC, RAND)
   cc.find_library('ssl'),      # OpenSSL libssl (TLS to the DC IP)
 ]
+if host_machine.system() == 'windows'
+  core_deps += cc.find_library('ws2_32')   # Winsock (sockets, WSAPoll)
+endif
 core_inc = include_directories('src')
+
+# ELF visibility gates the ABI on POSIX (TGWS_PUBLIC == visibility default). On
+# Windows TGWS_PUBLIC is empty and mingw auto-exports, so keep symbols visible.
+symbol_visibility = host_machine.system() == 'windows' ? 'default' : 'hidden'
 
 libmtproxyws = library('mtproxyws',
   'src/crypto.c',
@@ -32,7 +39,7 @@ libmtproxyws = library('mtproxyws',
   include_directories: core_inc,
   version: meson.project_version(),
   # Hidden by default: only TGWS_PUBLIC-marked symbols leave the .so.
-  gnu_symbol_visibility: 'hidden',
+  gnu_symbol_visibility: symbol_visibility,
   install: true,
 )
 
@@ -66,8 +73,10 @@ meson.override_dependency('mtproxy-ws', mtproxyws_dep)
 
 # The standalone CLI + systemd service are only meaningful when mtproxy-ws is the
 # top-level project. As a subproject (the Android GUI embeds the engine) we want
-# the library alone — skip the CLI (and its install) and the unit.
-if not meson.is_subproject()
+# the library alone — skip the CLI (and its install) and the unit. The CLI's
+# signal handling is POSIX-only, so it is also skipped on Windows (the GUI ships
+# its own headless --proxy mode there).
+if not meson.is_subproject() and host_machine.system() != 'windows'
 
 # Standalone headless CLI.
 executable('mtproxy-ws',
