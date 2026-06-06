@@ -29,6 +29,30 @@
 #define poll WSAPoll
 #define close_socket(fd) closesocket ((SOCKET) (fd))
 
+/* Winsock recv/send/setsockopt take char* buffers (the engine passes
+ * (unsigned char*)/void*); wrap them so the call sites stay portable. The
+ * macros are defined after the wrappers so the wrapper bodies call the real
+ * Winsock functions. */
+static inline int
+tgws_recv (int fd, void *buf, size_t n, int flags)
+{
+    return recv ((SOCKET) fd, (char *) buf, (int) n, flags);
+}
+static inline int
+tgws_send (int fd, const void *buf, size_t n, int flags)
+{
+    return send ((SOCKET) fd, (const char *) buf, (int) n, flags);
+}
+static inline int
+tgws_setsockopt (int fd, int level, int opt, const void *val, int len)
+{
+    return setsockopt ((SOCKET) fd, level, opt, (const char *) val, len);
+}
+#define recv(fd, buf, n, flags) tgws_recv ((fd), (buf), (n), (flags))
+#define send(fd, buf, n, flags) tgws_send ((fd), (buf), (n), (flags))
+#define setsockopt(fd, lvl, opt, val, len) \
+    tgws_setsockopt ((fd), (lvl), (opt), (val), (int) (len))
+
 /* WSAStartup, once per process. No-op on POSIX. */
 void tgws_net_init (void);
 
