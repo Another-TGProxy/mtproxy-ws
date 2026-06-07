@@ -57,7 +57,7 @@ int main (int argc, char **argv)
 {
     gchar *host = NULL, *secret = NULL, *fake_tls = NULL;
     gint port = 1443, pool_size = 4;
-    gboolean no_cfproxy = FALSE, no_verify_cf = FALSE;
+    gboolean no_cfproxy = FALSE, no_verify_cf = FALSE, verbose = FALSE;
     gchar **dc_ips = NULL, **cf_domains = NULL, **worker_domains = NULL;
 
     GOptionEntry entries[] = {
@@ -71,6 +71,7 @@ int main (int argc, char **argv)
         { "cf-domain", 0, 0, G_OPTION_ARG_STRING_ARRAY, &cf_domains, "CF base domain, repeatable", "DOMAIN" },
         { "worker-domain", 0, 0, G_OPTION_ARG_STRING_ARRAY, &worker_domains, "CF worker domain, repeatable", "DOMAIN" },
         { "fake-tls-domain", 0, 0, G_OPTION_ARG_STRING, &fake_tls, "Enable Fake-TLS (ee-secret) with this SNI", "DOMAIN" },
+        { "verbose", 'v', 0, G_OPTION_ARG_NONE, &verbose, "Log per-connection routing/handshake details", NULL },
         { NULL }
     };
 
@@ -109,6 +110,7 @@ int main (int argc, char **argv)
     }
     tgws_proxy_set_cfproxy (p, !no_cfproxy);
     tgws_proxy_set_verify_cf (p, !no_verify_cf);
+    tgws_proxy_set_verbose (p, verbose);
     if (cf_domains)
         for (int i = 0; cf_domains[i]; i++)
             tgws_proxy_add_cf_domain (p, cf_domains[i]);

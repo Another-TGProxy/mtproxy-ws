@@ -16,6 +16,7 @@ struct _TgwsProxy {
 
     gboolean cfproxy;          /* Cloudflare-proxy fallback enabled */
     gboolean verify_cf;        /* verify TLS cert for CF/worker domains */
+    gboolean verbose;          /* log per-connection routing/handshake details */
     GPtrArray *cf_domains;     /* char* user CF base domains (else built-ins) */
     GPtrArray *worker_domains; /* char* CF worker domains */
     char *fake_tls_domain;     /* ee-secret masking SNI; NULL/"" = disabled */

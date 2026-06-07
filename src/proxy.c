@@ -18,6 +18,12 @@
 
 #include <openssl/evp.h>
 
+/* Per-connection routing/handshake chatter — one+ line per inbound connection.
+ * Off by default so a busy or probed proxy (e.g. wrong-secret scans hammer the
+ * "bad handshake" path) doesn't flood the log; enable via tgws_proxy_set_verbose.
+ * Genuine faults still use g_warning unconditionally. */
+#define vlog(p, ...) do { if ((p)->verbose) g_message (__VA_ARGS__); } while (0)
+
 /* Default TCP/CF fallback target IP per DC. */
 static const char *
 dc_default_ip (int dc)
@@ -128,7 +134,7 @@ read_client_init (TgwsProxy *p, ClientIO *cio, unsigned char init[HANDSHAKE_LEN]
 
     unsigned char client_random[32], session_id[32];
     if (!verify_client_hello (ch, chlen, p->secret, client_random, session_id)) {
-        g_message ("fake-TLS verify failed -> masking to %s", p->fake_tls_domain);
+        vlog (p, "fake-TLS verify failed -> masking to %s", p->fake_tls_domain);
         masking_passthrough (client_fd, p->fake_tls_domain, ch, chlen);
         g_free (ch);
         return FALSE;
@@ -159,7 +165,7 @@ do_fallback (TgwsProxy *p, ClientIO *cio, int dc, gboolean media,
             g_snprintf (path, sizeof (path), "/apiws?dst=%s&dc=%d", dst, dc);
             WsConn *ws = ws_connect_host (wd, wd, path, p->verify_cf);
             if (ws) {
-                g_message ("DC%d%s -> CF worker %s (%s)", dc, mtag, wd, dst);
+                vlog (p, "DC%d%s -> CF worker %s (%s)", dc, mtag, wd, dst);
                 if (ws_send (ws, relay_init, HANDSHAKE_LEN))
                     bridge (p, cio, ws, ctx, splitter);
                 ws_free (ws);
@@ -181,7 +187,7 @@ do_fallback (TgwsProxy *p, ClientIO *cio, int dc, gboolean media,
             g_snprintf (dom, sizeof (dom), "kws%d.%s", wsdc, base);
             WsConn *ws = ws_connect_host (dom, dom, "/apiws", p->verify_cf);
             if (ws) {
-                g_message ("DC%d%s -> CF proxy %s", dc, mtag, dom);
+                vlog (p, "DC%d%s -> CF proxy %s", dc, mtag, dom);
                 if (ws_send (ws, relay_init, HANDSHAKE_LEN))
                     bridge (p, cio, ws, ctx, splitter);
                 ws_free (ws);
@@ -194,7 +200,7 @@ do_fallback (TgwsProxy *p, ClientIO *cio, int dc, gboolean media,
     if (dst != NULL) {
         int rfd = tcp_connect_host (dst, 443);
         if (rfd >= 0) {
-            g_message ("DC%d%s -> TCP fallback %s:443", dc, mtag, dst);
+            vlog (p, "DC%d%s -> TCP fallback %s:443", dc, mtag, dst);
             if (fd_write_all (rfd, relay_init, HANDSHAKE_LEN))
                 tcp_bridge (p, cio, rfd, ctx);
             close_socket (rfd);
@@ -219,7 +225,7 @@ serve_client (TgwsProxy *p, ClientIO *cio)
     unsigned char proto[4];
     unsigned char prekey_iv[48];
     if (!try_handshake (init, p->secret, &dc, &media, proto, prekey_iv)) {
-        g_message ("bad handshake (wrong secret or proto)");
+        vlog (p, "bad handshake (wrong secret or proto)");
         return;
     }
 
@@ -239,26 +245,26 @@ serve_client (TgwsProxy *p, ClientIO *cio)
     if (ip != NULL) {
         ws = pool_get (p, dc, media);
         if (ws)
-            g_message ("DC%d%s -> WS pool hit via %s", dc, media ? " media" : "", ip);
+            vlog (p, "DC%d%s -> WS pool hit via %s", dc, media ? " media" : "", ip);
         for (int i = 0; i < 2 && !ws; i++) {
             char dbuf[64];
             const char *domain = ws_domain_for (dc, media, i, dbuf, sizeof (dbuf));
             ws = ws_connect_host (ip, domain, "/apiws", FALSE);
             if (ws)
-                g_message ("DC%d%s -> wss://%s/apiws via %s",
-                           dc, media ? " media" : "", domain, ip);
+                vlog (p, "DC%d%s -> wss://%s/apiws via %s",
+                      dc, media ? " media" : "", domain, ip);
         }
         if (ws) {
             if (ws_send (ws, relay_init, HANDSHAKE_LEN))
                 bridge (p, cio, ws, &ctx, splitter);
             routed = TRUE;
         } else {
-            g_message ("DC%d%s direct WS failed -> fallback", dc, media ? " media" : "");
+            vlog (p, "DC%d%s direct WS failed -> fallback", dc, media ? " media" : "");
         }
     }
 
     if (!routed && !do_fallback (p, cio, dc, media, relay_init, &ctx, splitter))
-        g_message ("DC%d%s no route available", dc, media ? " media" : "");
+        vlog (p, "DC%d%s no route available", dc, media ? " media" : "");
 
     if (ws)
         ws_free (ws);
@@ -364,6 +370,11 @@ void tgws_proxy_set_cfproxy (TgwsProxy *p, gboolean enabled)
 void tgws_proxy_set_verify_cf (TgwsProxy *p, gboolean enabled)
 {
     p->verify_cf = enabled;
+}
+
+void tgws_proxy_set_verbose (TgwsProxy *p, gboolean enabled)
+{
+    p->verbose = enabled;
 }
 
 void tgws_proxy_add_cf_domain (TgwsProxy *p, const char *domain)

@@ -39,6 +39,10 @@ TGWS_PUBLIC void tgws_proxy_add_worker_domain (TgwsProxy *self, const char *doma
  * direct DC-IP path is never verified (its cert can't match the IP). */
 TGWS_PUBLIC void tgws_proxy_set_verify_cf (TgwsProxy *self, gboolean enabled);
 
+/* Log per-connection routing/handshake details (default off). Off keeps the log
+ * quiet on a busy or probed proxy; genuine faults are logged regardless. */
+TGWS_PUBLIC void tgws_proxy_set_verbose (TgwsProxy *self, gboolean enabled);
+
 /* Enable Fake-TLS (ee-secret) masking with the given SNI domain; "" disables. */
 TGWS_PUBLIC void tgws_proxy_set_fake_tls (TgwsProxy *self, const char *domain);
 
