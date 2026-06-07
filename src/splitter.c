@@ -36,31 +36,44 @@ splitter_free (MsgSplitter *s)
     g_free (s);
 }
 
-/* -1 = need more; 0 = unknown proto (stop splitting); >0 = packet length. */
+/* A single MTProto packet over the proxy is far smaller than this; an absurd
+ * length field means a malformed/hostile stream, so stop splitting rather than
+ * overflow the length math or buffer toward gigabytes. Also bounds cipher_buf
+ * growth: once buffered bytes reach a complete (capped) packet, it's emitted. */
+#define SPLITTER_MAX_PACKET (16u * 1024u * 1024u)
+
+/* -1 = need more; 0 = stop splitting (unknown proto / implausible length);
+ * >0 = packet length. All length math is unsigned + capped, so no int overflow
+ * and no oversized g_bytes_new from a crafted length field. */
 static int
 splitter_next_len (MsgSplitter *s, int offset, int avail)
 {
     if (avail <= 0)
         return -1;
     const guint8 *p = s->plain_buf->data;
+    guint32 avail_u = (guint32) avail;
     if (s->proto == PROTO_ABRIDGED_INT) {
         guint8 first = p[offset];
-        int payload_len, header_len;
+        guint32 payload_len;
+        guint32 header_len;
         if (first == 0x7F || first == 0xFF) {
             if (avail < 4)
                 return -1;
-            payload_len = (p[offset + 1] | (p[offset + 2] << 8) | (p[offset + 3] << 16)) * 4;
+            payload_len = ((guint32) p[offset + 1] | ((guint32) p[offset + 2] << 8)
+                           | ((guint32) p[offset + 3] << 16)) * 4u;
             header_len = 4;
         } else {
-            payload_len = (first & 0x7F) * 4;
+            payload_len = (guint32) (first & 0x7F) * 4u;
             header_len = 1;
         }
-        if (payload_len <= 0)
+        if (payload_len == 0)
             return 0;
-        int packet_len = header_len + payload_len;
-        if (avail < packet_len)
+        if (payload_len > SPLITTER_MAX_PACKET)
+            return 0;
+        guint32 packet_len = header_len + payload_len;
+        if (avail_u < packet_len)
             return -1;
-        return packet_len;
+        return (int) packet_len;
     }
     if (s->proto == PROTO_INTERMEDIATE_INT ||
         s->proto == PROTO_PADDED_INTERMEDIATE_INT) {
@@ -69,10 +82,12 @@ splitter_next_len (MsgSplitter *s, int offset, int avail)
         guint32 payload_len = ((guint32) p[offset] | ((guint32) p[offset + 1] << 8) | ((guint32) p[offset + 2] << 16) | ((guint32) p[offset + 3] << 24)) & 0x7FFFFFFFu;
         if (payload_len == 0)
             return 0;
-        int packet_len = 4 + (int) payload_len;
-        if (avail < packet_len)
+        if (payload_len > SPLITTER_MAX_PACKET)
+            return 0;
+        guint32 packet_len = 4u + payload_len;
+        if (avail_u < packet_len)
             return -1;
-        return packet_len;
+        return (int) packet_len;
     }
     return 0;
 }

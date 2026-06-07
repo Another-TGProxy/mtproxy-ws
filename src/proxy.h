@@ -26,7 +26,9 @@ typedef struct _TgwsProxy TgwsProxy;
 TGWS_PUBLIC TgwsProxy *tgws_proxy_new (const char *host, guint16 port,
                                        const unsigned char *secret16);
 
-/* Register DC -> target IP (the WSS endpoint reached at <ip>:443). */
+/* Register DC -> target IP (the WSS endpoint reached at <ip>:443).
+ * Call before tgws_proxy_start(): the routing tables are read unlocked by the
+ * client/pool threads, so mutating them after start would race. */
 TGWS_PUBLIC void tgws_proxy_add_dc (TgwsProxy *self, int dc, const char *ip);
 
 /* Fallback configuration (used when a DC has no direct WS redirect, or it
@@ -48,6 +50,10 @@ TGWS_PUBLIC void tgws_proxy_set_fake_tls (TgwsProxy *self, const char *domain);
 
 /* Pre-warmed WS connections per (dc, media); 0 disables pooling (default 4). */
 TGWS_PUBLIC void tgws_proxy_set_pool_size (TgwsProxy *self, int size);
+
+/* Cap on concurrent client connections (default 4096); 0 = unlimited. A backstop
+ * against thread/fd exhaustion; excess connections are refused. */
+TGWS_PUBLIC void tgws_proxy_set_max_conns (TgwsProxy *self, int max_conns);
 
 /* Bind + listen + spawn the accept thread. Returns FALSE on bind/listen error. */
 TGWS_PUBLIC gboolean tgws_proxy_start (TgwsProxy *self);

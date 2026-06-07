@@ -30,6 +30,12 @@ struct _TgwsProxy {
     GThread *listen_thread;
     volatile gint running;
 
+    int max_conns;              /* cap on concurrent client connections; 0 = unlimited */
+    volatile gint active_conns; /* live per-client threads (cap + join-on-stop) */
+    volatile gint refills;      /* live pool-refill threads (join-on-stop) */
+    GMutex conns_lock;
+    GHashTable *client_fds;     /* set of live client fds; shutdown() on stop to unblock reads */
+
     GMutex stats_lock;
     gint64 conn_total;
     gint64 conn_active;

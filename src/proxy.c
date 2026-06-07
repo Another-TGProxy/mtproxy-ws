@@ -272,6 +272,31 @@ serve_client (TgwsProxy *p, ClientIO *cio)
     crypto_ctx_clear (&ctx);
 }
 
+/* Idle timeout (s) on client sockets: bounds slowloris — a peer that stalls
+ * mid-handshake is reaped instead of pinning a thread+fd forever. Active bridges
+ * are poll-driven, so a live-but-idle session never trips this. */
+#define CLIENT_IO_TIMEOUT 60
+/* Default ceiling on concurrent client connections (one thread each); a backstop
+ * against thread/fd exhaustion. tgws_proxy_set_max_conns(0) lifts it. */
+#define DEFAULT_MAX_CONNS 4096
+
+/* Track live client fds so stop() can shutdown() them and unblock their reads. */
+static void
+conn_register (TgwsProxy *p, int fd)
+{
+    g_mutex_lock (&p->conns_lock);
+    g_hash_table_add (p->client_fds, GINT_TO_POINTER (fd));
+    g_mutex_unlock (&p->conns_lock);
+}
+
+static void
+conn_unregister (TgwsProxy *p, int fd)
+{
+    g_mutex_lock (&p->conns_lock);
+    g_hash_table_remove (p->client_fds, GINT_TO_POINTER (fd));
+    g_mutex_unlock (&p->conns_lock);
+}
+
 static gpointer
 handle_client (gpointer data)
 {
@@ -284,13 +309,16 @@ handle_client (gpointer data)
 
     int one = 1;
     setsockopt (client_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof (one));
+    tgws_set_io_timeout (client_fd, CLIENT_IO_TIMEOUT);
 
     ClientIO cio = { client_fd, FALSE, g_byte_array_new () };
     serve_client (p, &cio);
 
     g_byte_array_free (cio.rbuf, TRUE);
+    conn_unregister (p, client_fd);
     close_socket (client_fd);
     stats_add (p, 0, -1, 0, 0);
+    g_atomic_int_add (&p->active_conns, -1);
     return NULL;
 }
 
@@ -311,6 +339,12 @@ listen_loop (gpointer data)
             close_socket (cfd);
             break;
         }
+        /* Refuse beyond the concurrency cap instead of spawning unbounded threads. */
+        if (p->max_conns > 0 && g_atomic_int_get (&p->active_conns) >= p->max_conns) {
+            vlog (p, "connection cap (%d) reached — refusing", p->max_conns);
+            close_socket (cfd);
+            continue;
+        }
 #ifdef SO_NOSIGPIPE
         /* macOS: suppress SIGPIPE on writes to this client (no MSG_NOSIGNAL). */
         {
@@ -318,11 +352,13 @@ listen_loop (gpointer data)
             setsockopt (cfd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof (one));
         }
 #endif
+        conn_register (p, cfd);
+        g_atomic_int_add (&p->active_conns, 1);
         ConnArgs *args = g_new0 (ConnArgs, 1);
         args->proxy = p;
         args->client_fd = cfd;
         GThread *t = g_thread_new ("tgws-client", handle_client, args);
-        g_thread_unref (t); /* detached */
+        g_thread_unref (t); /* detached; counted via active_conns, joined in stop() */
     }
     return NULL;
 }
@@ -348,6 +384,9 @@ tgws_proxy_new (const char *host, guint16 port, const unsigned char *secret16)
     p->pool_refilling = g_hash_table_new (g_direct_hash, g_direct_equal);
     g_mutex_init (&p->pool_lock);
     p->listen_fd = -1;
+    p->max_conns = DEFAULT_MAX_CONNS;
+    g_mutex_init (&p->conns_lock);
+    p->client_fds = g_hash_table_new (g_direct_hash, g_direct_equal);
     g_mutex_init (&p->stats_lock);
     return p;
 }
@@ -355,6 +394,11 @@ tgws_proxy_new (const char *host, guint16 port, const unsigned char *secret16)
 void tgws_proxy_set_pool_size (TgwsProxy *p, int size)
 {
     p->pool_size = (size < 0) ? 0 : size;
+}
+
+void tgws_proxy_set_max_conns (TgwsProxy *p, int max_conns)
+{
+    p->max_conns = (max_conns < 0) ? 0 : max_conns;
 }
 
 void tgws_proxy_add_dc (TgwsProxy *p, int dc, const char *ip)
@@ -445,6 +489,24 @@ void tgws_proxy_stop (TgwsProxy *p)
         g_thread_join (p->listen_thread);
         p->listen_thread = NULL;
     }
+    /* Unblock any client thread sitting in a blocking read so it exits promptly,
+     * then wait for all per-client + pool-refill threads to finish. Without this
+     * tgws_proxy_free would destroy the mutexes/arrays out from under live
+     * detached threads (use-after-free). */
+    g_mutex_lock (&p->conns_lock);
+    GHashTableIter it;
+    gpointer key;
+    g_hash_table_iter_init (&it, p->client_fds);
+    while (g_hash_table_iter_next (&it, &key, NULL))
+        shutdown (GPOINTER_TO_INT (key), SHUT_RDWR);
+    g_mutex_unlock (&p->conns_lock);
+
+    for (int i = 0; i < 400; i++) { /* bounded ~10s safety net */
+        if (g_atomic_int_get (&p->active_conns) == 0
+            && g_atomic_int_get (&p->refills) == 0)
+            break;
+        g_usleep (25000);
+    }
 }
 
 gint64 tgws_proxy_connections_total (TgwsProxy *p)
@@ -489,6 +551,8 @@ void tgws_proxy_free (TgwsProxy *p)
     g_ptr_array_free (p->cf_domains, TRUE);
     g_ptr_array_free (p->worker_domains, TRUE);
     g_free (p->fake_tls_domain);
+    g_hash_table_destroy (p->client_fds);
+    g_mutex_clear (&p->conns_lock);
     g_mutex_clear (&p->stats_lock);
     g_free (p->host);
     g_free (p);

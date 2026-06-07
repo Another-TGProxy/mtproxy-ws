@@ -45,8 +45,10 @@ verify_client_hello (const unsigned char *data, int n, const unsigned char *secr
 
     unsigned char expected[32];
     unsigned int elen = 32;
-    HMAC (EVP_sha256 (), secret, 16, zeroed, n, expected, &elen);
+    unsigned char *hres = HMAC (EVP_sha256 (), secret, 16, zeroed, n, expected, &elen);
     g_free (zeroed);
+    if (hres == NULL)
+        return FALSE;
 
     if (CRYPTO_memcmp (expected, client_random, 28) != 0)
         return FALSE;
@@ -77,14 +79,21 @@ send_server_hello (int fd, const unsigned char *secret,
     unsigned char *resp = g_malloc (total);
     memcpy (resp, SH_TEMPLATE, 127);
     memcpy (resp + 44, session_id, 32);
-    RAND_bytes (resp + 89, 32); /* pubkey */
+    /* Fail closed if the RNG fails — predictable "random" would weaken the mask. */
+    if (RAND_bytes (resp + 89, 32) != 1) { /* pubkey */
+        g_free (resp);
+        return FALSE;
+    }
     memcpy (resp + 127, ccs, 6);
     resp[133] = 0x17;
     resp[134] = 0x03;
     resp[135] = 0x03;
     resp[136] = (unsigned char) ((enc_size >> 8) & 0xff);
     resp[137] = (unsigned char) (enc_size & 0xff);
-    RAND_bytes (resp + 138, enc_size);
+    if (RAND_bytes (resp + 138, enc_size) != 1) {
+        g_free (resp);
+        return FALSE;
+    }
 
     /* server_random = HMAC(secret, client_random + resp), patched at offset 11 */
     unsigned char *hin = g_malloc (32 + total);

@@ -17,4 +17,8 @@ gboolean fd_write_all (int fd, const unsigned char *buf, size_t n);
  * Returns the connected fd or -1 on failure. */
 int tcp_connect_host (const char *host, int port);
 
+/* Set a recv/send timeout (seconds) on a socket so a stalled peer can't pin the
+ * blocking read/write forever (slowloris). 0 clears it. */
+void tgws_set_io_timeout (int fd, int seconds);
+
 #endif

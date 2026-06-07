@@ -19,6 +19,8 @@ namespace TgWsProxy {
         public void set_verify_cf (bool enabled);
         [CCode (cname = "tgws_proxy_set_verbose")]
         public void set_verbose (bool enabled);
+        [CCode (cname = "tgws_proxy_set_max_conns")]
+        public void set_max_conns (int max_conns);
         [CCode (cname = "tgws_proxy_add_cf_domain")]
         public void add_cf_domain (string domain);
         [CCode (cname = "tgws_proxy_add_worker_domain")]

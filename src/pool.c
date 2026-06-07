@@ -71,6 +71,7 @@ pool_refill_thread (gpointer data)
     g_mutex_lock (&p->pool_lock);
     g_hash_table_remove (p->pool_refilling, POOL_KEY (dc, media));
     g_mutex_unlock (&p->pool_lock);
+    g_atomic_int_add (&p->refills, -1);
     return NULL;
 }
 
@@ -87,6 +88,7 @@ pool_schedule_refill (TgwsProxy *p, int dc, gboolean media)
     g_hash_table_insert (p->pool_refilling, POOL_KEY (dc, media), GINT_TO_POINTER (1));
     g_mutex_unlock (&p->pool_lock);
 
+    g_atomic_int_add (&p->refills, 1);   /* joined on stop() */
     RefillArgs *a = g_new0 (RefillArgs, 1);
     a->p = p;
     a->dc = dc;

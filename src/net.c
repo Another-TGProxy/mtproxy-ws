@@ -4,12 +4,29 @@
 
 #include <string.h>
 #include <errno.h>
+#ifndef _WIN32
+#include <sys/time.h>   /* struct timeval for SO_RCVTIMEO */
+#endif
 
 /* macOS lacks MSG_NOSIGNAL; SIGPIPE is suppressed there via SO_NOSIGPIPE on the
  * socket (set in tcp_connect_host) and SIG_IGN in the executables. */
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
+
+void
+tgws_set_io_timeout (int fd, int seconds)
+{
+#ifdef _WIN32
+    DWORD ms = (DWORD) (seconds * 1000);
+    setsockopt (fd, SOL_SOCKET, SO_RCVTIMEO, (const char *) &ms, sizeof (ms));
+    setsockopt (fd, SOL_SOCKET, SO_SNDTIMEO, (const char *) &ms, sizeof (ms));
+#else
+    struct timeval tv = { seconds, 0 };
+    setsockopt (fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof (tv));
+    setsockopt (fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof (tv));
+#endif
+}
 
 #ifdef _WIN32
 void
