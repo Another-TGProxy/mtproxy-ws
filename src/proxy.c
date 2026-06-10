@@ -489,10 +489,10 @@ void tgws_proxy_stop (TgwsProxy *p)
         g_thread_join (p->listen_thread);
         p->listen_thread = NULL;
     }
-    /* Unblock any client thread sitting in a blocking read so it exits promptly,
-     * then wait for all per-client + pool-refill threads to finish. Without this
-     * tgws_proxy_free would destroy the mutexes/arrays out from under live
-     * detached threads (use-after-free). */
+    /* Unblock any client thread sitting in a blocking read so it exits promptly.
+     * The threads are detached and drain on their own; the wait for them lives in
+     * tgws_proxy_free, so stop() never blocks the caller. That matters on Android,
+     * where the engine runs in-process and stop() is called on the UI thread. */
     g_mutex_lock (&p->conns_lock);
     GHashTableIter it;
     gpointer key;
@@ -500,13 +500,6 @@ void tgws_proxy_stop (TgwsProxy *p)
     while (g_hash_table_iter_next (&it, &key, NULL))
         shutdown (GPOINTER_TO_INT (key), SHUT_RDWR);
     g_mutex_unlock (&p->conns_lock);
-
-    for (int i = 0; i < 400; i++) { /* bounded ~10s safety net */
-        if (g_atomic_int_get (&p->active_conns) == 0
-            && g_atomic_int_get (&p->refills) == 0)
-            break;
-        g_usleep (25000);
-    }
 }
 
 gint64 tgws_proxy_connections_total (TgwsProxy *p)
@@ -543,6 +536,15 @@ void tgws_proxy_free (TgwsProxy *p)
     if (!p)
         return;
     tgws_proxy_stop (p);
+    /* Wait for the detached per-client + pool-refill threads to finish before
+     * destroying the mutexes/arrays they touch (use-after-free guard). stop()
+     * already shut their fds down, so they drain promptly. */
+    for (int i = 0; i < 400; i++) { /* bounded ~10s safety net */
+        if (g_atomic_int_get (&p->active_conns) == 0
+            && g_atomic_int_get (&p->refills) == 0)
+            break;
+        g_usleep (25000);
+    }
     pool_drain (p);
     g_hash_table_destroy (p->pool);
     g_hash_table_destroy (p->pool_refilling);
