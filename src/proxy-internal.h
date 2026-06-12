@@ -21,10 +21,12 @@ struct _TgwsProxy {
     GPtrArray *worker_domains; /* char* CF worker domains */
     char *fake_tls_domain;     /* ee-secret masking SNI; NULL/"" = disabled */
 
-    int pool_size;              /* pre-warmed WS per (dc,media); 0 = disabled */
+    int pool_size;              /* pre-warmed conns per pool slot; 0 = disabled */
     GHashTable *pool;           /* key (dc<<1|media) -> GQueue* of PoolEntry* */
     GHashTable *pool_refilling; /* key -> 1 while a refill thread is in flight */
-    GMutex pool_lock;
+    GHashTable *worker_pool;    /* key (dc<<8|widx) -> GQueue* of PoolEntry* */
+    GHashTable *worker_refilling;
+    GMutex pool_lock;           /* guards both pools and their refilling sets */
 
     int listen_fd;
     GThread *listen_thread;
@@ -50,5 +52,8 @@ void stats_add (TgwsProxy *p, gint64 d_total, gint64 d_active,
 /* WS hostname for (dc, media, idx in {0,1}); writes into buf, returns buf. */
 const char *ws_domain_for (int dc, gboolean media, int idx,
                            char *buf, gsize buflen);
+
+/* Default TCP/CF fallback target IP for @dc, or NULL if unknown. */
+const char *dc_default_ip (int dc);
 
 #endif

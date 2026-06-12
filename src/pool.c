@@ -3,8 +3,9 @@
 #include "proxy-internal.h"
 #include "compat.h"
 
-#define POOL_KEY(dc, media) GINT_TO_POINTER (((dc) << 1) | ((media) ? 1 : 0))
-#define POOL_MAX_AGE_US     (120LL * 1000000)
+#define POOL_KEY(dc, media)  GINT_TO_POINTER (((dc) << 1) | ((media) ? 1 : 0))
+#define WORKER_KEY(dc, widx) GINT_TO_POINTER (((dc) << 8) | ((widx) & 0xff))
+#define POOL_MAX_AGE_US      (120LL * 1000000)
 
 typedef struct
 {
@@ -124,6 +125,112 @@ pool_get (TgwsProxy *p, int dc, gboolean media)
     return ret;
 }
 
+/* ---- CF-worker fallback pool: same machinery keyed by (dc, worker index) ----
+ * Worker connections target worker_domains[widx] with the DC's default IP as the
+ * ?dst, so a pooled entry is specific to a (dc, widx) pair (no media split). */
+
+typedef struct
+{
+    TgwsProxy *p;
+    int dc;
+    int widx;
+} WorkerRefillArgs;
+
+static gpointer
+pool_worker_refill_thread (gpointer data)
+{
+    WorkerRefillArgs *a = data;
+    TgwsProxy *p = a->p;
+    int dc = a->dc;
+    int widx = a->widx;
+    g_free (a);
+
+    const char *dst = dc_default_ip (dc);
+    /* worker_domains is fixed before start() and not mutated while running. */
+    if (dst != NULL && widx >= 0 && (guint) widx < p->worker_domains->len) {
+        const char *wd = p->worker_domains->pdata[widx];
+        char path[256];
+        g_snprintf (path, sizeof (path), "/apiws?dst=%s&dc=%d", dst, dc);
+
+        g_mutex_lock (&p->pool_lock);
+        GQueue *q = g_hash_table_lookup (p->worker_pool, WORKER_KEY (dc, widx));
+        int have = q ? (int) g_queue_get_length (q) : 0;
+        g_mutex_unlock (&p->pool_lock);
+
+        for (int i = have; i < p->pool_size && g_atomic_int_get (&p->running); i++) {
+            WsConn *ws = ws_connect_host (wd, wd, path, p->verify_cf);
+            if (!ws)
+                break;
+            PoolEntry *e = g_new0 (PoolEntry, 1);
+            e->ws = ws;
+            e->created = g_get_monotonic_time ();
+            g_mutex_lock (&p->pool_lock);
+            GQueue *qq = g_hash_table_lookup (p->worker_pool, WORKER_KEY (dc, widx));
+            if (!qq) {
+                qq = g_queue_new ();
+                g_hash_table_insert (p->worker_pool, WORKER_KEY (dc, widx), qq);
+            }
+            g_queue_push_tail (qq, e);
+            g_mutex_unlock (&p->pool_lock);
+        }
+    }
+
+    g_mutex_lock (&p->pool_lock);
+    g_hash_table_remove (p->worker_refilling, WORKER_KEY (dc, widx));
+    g_mutex_unlock (&p->pool_lock);
+    g_atomic_int_add (&p->refills, -1);
+    return NULL;
+}
+
+static void
+pool_worker_schedule_refill (TgwsProxy *p, int dc, int widx)
+{
+    if (p->pool_size <= 0 || !g_atomic_int_get (&p->running))
+        return;
+    g_mutex_lock (&p->pool_lock);
+    if (g_hash_table_contains (p->worker_refilling, WORKER_KEY (dc, widx))) {
+        g_mutex_unlock (&p->pool_lock);
+        return;
+    }
+    g_hash_table_insert (p->worker_refilling, WORKER_KEY (dc, widx), GINT_TO_POINTER (1));
+    g_mutex_unlock (&p->pool_lock);
+
+    g_atomic_int_add (&p->refills, 1);   /* joined on stop() */
+    WorkerRefillArgs *a = g_new0 (WorkerRefillArgs, 1);
+    a->p = p;
+    a->dc = dc;
+    a->widx = widx;
+    GThread *t = g_thread_new ("tgws-wpool", pool_worker_refill_thread, a);
+    g_thread_unref (t);
+}
+
+WsConn *
+pool_worker_get (TgwsProxy *p, int dc, int widx)
+{
+    if (p->pool_size <= 0)
+        return NULL;
+    gint64 now = g_get_monotonic_time ();
+    WsConn *ret = NULL;
+    for (;;) {
+        g_mutex_lock (&p->pool_lock);
+        GQueue *q = g_hash_table_lookup (p->worker_pool, WORKER_KEY (dc, widx));
+        PoolEntry *e = (q && !g_queue_is_empty (q)) ? g_queue_pop_head (q) : NULL;
+        g_mutex_unlock (&p->pool_lock);
+        if (!e)
+            break;
+        gint64 age = now - e->created;
+        WsConn *ws = e->ws;
+        g_free (e);
+        if (age <= POOL_MAX_AGE_US && ws_alive (ws)) {
+            ret = ws;
+            break;
+        }
+        ws_free (ws);
+    }
+    pool_worker_schedule_refill (p, dc, widx);
+    return ret;
+}
+
 void
 pool_warmup (TgwsProxy *p)
 {
@@ -139,13 +246,12 @@ pool_warmup (TgwsProxy *p)
     }
 }
 
-void
-pool_drain (TgwsProxy *p)
+static void
+drain_table (GHashTable *t)
 {
-    g_mutex_lock (&p->pool_lock);
     GHashTableIter it;
     gpointer key, val;
-    g_hash_table_iter_init (&it, p->pool);
+    g_hash_table_iter_init (&it, t);
     while (g_hash_table_iter_next (&it, &key, &val)) {
         GQueue *q = val;
         PoolEntry *e;
@@ -155,6 +261,14 @@ pool_drain (TgwsProxy *p)
         }
         g_queue_free (q);
     }
-    g_hash_table_remove_all (p->pool);
+    g_hash_table_remove_all (t);
+}
+
+void
+pool_drain (TgwsProxy *p)
+{
+    g_mutex_lock (&p->pool_lock);
+    drain_table (p->pool);
+    drain_table (p->worker_pool);
     g_mutex_unlock (&p->pool_lock);
 }

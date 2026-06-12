@@ -25,7 +25,7 @@
 #define vlog(p, ...) do { if ((p)->verbose) g_message (__VA_ARGS__); } while (0)
 
 /* Default TCP/CF fallback target IP per DC. */
-static const char *
+const char *
 dc_default_ip (int dc)
 {
     switch (dc) {
@@ -157,15 +157,35 @@ do_fallback (TgwsProxy *p, ClientIO *cio, int dc, gboolean media,
     const char *dst = dc_default_ip (dc);
     const char *mtag = media ? " media" : "";
 
-    /* 1) CF worker: WSS to worker_domain with ?dst=<ip>&dc=<n> */
+    /* 1) CF worker: WSS to worker_domain with ?dst=<ip>&dc=<n>. Visit the
+     * domains in a shuffled order so load spreads across them and a slow/down
+     * first domain doesn't add its connect timeout to every session. A pooled
+     * (pre-warmed) connection is preferred over a cold handshake. */
     if (p->worker_domains->len > 0 && dst != NULL) {
-        for (guint i = 0; i < p->worker_domains->len; i++) {
+        guint n = p->worker_domains->len;
+        guint *order = g_newa (guint, n);
+        for (guint i = 0; i < n; i++)
+            order[i] = i;
+        for (guint i = n; i > 1; i--) {
+            guint j = (guint) g_random_int_range (0, (gint32) i);
+            guint t = order[i - 1];
+            order[i - 1] = order[j];
+            order[j] = t;
+        }
+        for (guint k = 0; k < n; k++) {
+            guint i = order[k];
             const char *wd = p->worker_domains->pdata[i];
-            char path[256];
-            g_snprintf (path, sizeof (path), "/apiws?dst=%s&dc=%d", dst, dc);
-            WsConn *ws = ws_connect_host (wd, wd, path, p->verify_cf);
+            WsConn *ws = pool_worker_get (p, dc, (int) i);
             if (ws) {
-                vlog (p, "DC%d%s -> CF worker %s (%s)", dc, mtag, wd, dst);
+                vlog (p, "DC%d%s -> CF worker pool hit %s (%s)", dc, mtag, wd, dst);
+            } else {
+                char path[256];
+                g_snprintf (path, sizeof (path), "/apiws?dst=%s&dc=%d", dst, dc);
+                ws = ws_connect_host (wd, wd, path, p->verify_cf);
+                if (ws)
+                    vlog (p, "DC%d%s -> CF worker %s (%s)", dc, mtag, wd, dst);
+            }
+            if (ws) {
                 if (ws_send (ws, relay_init, HANDSHAKE_LEN))
                     bridge (p, cio, ws, ctx, splitter);
                 ws_free (ws);
@@ -382,6 +402,8 @@ tgws_proxy_new (const char *host, guint16 port, const unsigned char *secret16)
     p->pool_size = 4;
     p->pool = g_hash_table_new (g_direct_hash, g_direct_equal);
     p->pool_refilling = g_hash_table_new (g_direct_hash, g_direct_equal);
+    p->worker_pool = g_hash_table_new (g_direct_hash, g_direct_equal);
+    p->worker_refilling = g_hash_table_new (g_direct_hash, g_direct_equal);
     g_mutex_init (&p->pool_lock);
     p->listen_fd = -1;
     p->max_conns = DEFAULT_MAX_CONNS;
@@ -548,6 +570,8 @@ void tgws_proxy_free (TgwsProxy *p)
     pool_drain (p);
     g_hash_table_destroy (p->pool);
     g_hash_table_destroy (p->pool_refilling);
+    g_hash_table_destroy (p->worker_pool);
+    g_hash_table_destroy (p->worker_refilling);
     g_mutex_clear (&p->pool_lock);
     g_hash_table_destroy (p->dc_redirects);
     g_ptr_array_free (p->cf_domains, TRUE);
