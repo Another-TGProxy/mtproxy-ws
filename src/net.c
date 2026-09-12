@@ -6,6 +6,9 @@
 #include <errno.h>
 #ifndef _WIN32
 #include <sys/time.h>   /* struct timeval for SO_RCVTIMEO */
+#ifndef _WIN32
+#include <fcntl.h>      /* O_NONBLOCK for the bounded connect */
+#endif
 #endif
 
 /* macOS lacks MSG_NOSIGNAL; SIGPIPE is suppressed there via SO_NOSIGPIPE on the
@@ -73,6 +76,56 @@ fd_write_all (int fd, const unsigned char *buf, size_t n)
     return TRUE;
 }
 
+/* A blocked address doesn't refuse the connection, it swallows the SYN — so a
+ * blocking connect() sits on the kernel's own timeout, well over two minutes.
+ * With several of those in flight (a video downloads in parallel streams) the
+ * transfer stalls instead of failing over to the Cloudflare path within seconds.
+ * Bound it: non-blocking connect, poll for writability, read SO_ERROR. */
+#define CONNECT_TIMEOUT_MS 5000
+
+static gboolean
+connect_timed (int fd, const struct sockaddr *addr, socklen_t len, int timeout_ms)
+{
+#ifdef _WIN32
+    u_long nb = 1;
+    ioctlsocket ((SOCKET) fd, FIONBIO, &nb);
+#else
+    int flags = fcntl (fd, F_GETFL, 0);
+    if (flags < 0 || fcntl (fd, F_SETFL, flags | O_NONBLOCK) < 0)
+        return FALSE;
+#endif
+
+    gboolean ok = FALSE;
+    if (connect (fd, addr, len) == 0) {
+        ok = TRUE;
+    } else {
+#ifdef _WIN32
+        gboolean pending = (WSAGetLastError () == WSAEWOULDBLOCK);
+#else
+        gboolean pending = (errno == EINPROGRESS);
+#endif
+        if (pending) {
+            struct pollfd pf = { fd, POLLOUT, 0 };
+            if (poll (&pf, 1, timeout_ms) > 0 && (pf.revents & POLLOUT)) {
+                int err = 0;
+                socklen_t elen = sizeof (err);
+                /* Writable only means the attempt finished; SO_ERROR says how. */
+                if (getsockopt (fd, SOL_SOCKET, SO_ERROR, (char *) &err, &elen) == 0
+                    && err == 0)
+                    ok = TRUE;
+            }
+        }
+    }
+
+#ifdef _WIN32
+    nb = 0;
+    ioctlsocket ((SOCKET) fd, FIONBIO, &nb);
+#else
+    fcntl (fd, F_SETFL, flags);
+#endif
+    return ok;
+}
+
 int
 tcp_connect_host (const char *host, int port)
 {
@@ -89,7 +142,7 @@ tcp_connect_host (const char *host, int port)
         fd = socket (ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (fd < 0)
             continue;
-        if (connect (fd, ai->ai_addr, ai->ai_addrlen) == 0)
+        if (connect_timed (fd, ai->ai_addr, ai->ai_addrlen, CONNECT_TIMEOUT_MS))
             break;
         close_socket (fd);
         fd = -1;
