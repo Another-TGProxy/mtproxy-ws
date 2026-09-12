@@ -23,6 +23,39 @@ static gboolean ssl_write_all (SSL *ssl, const unsigned char *buf, size_t n);
  * Linux distros, finally the library's own defaults ($SSL_CERT_DIR / built-in).
  * The library default alone is unreliable (e.g. LibreSSL points at a path that
  * may not exist). On Windows/macOS this needs a native cert-store backend. */
+/* Add every certificate in @dir to the context's store. Returns whether any
+ * loaded: a directory that exists but yields nothing is not a usable trust
+ * store, so the caller moves on to the next candidate. */
+static gboolean
+load_ca_dir (SSL_CTX *ctx, const char *dir)
+{
+    GDir *d = g_dir_open (dir, 0, NULL);
+    if (d == NULL)
+        return FALSE;
+
+    X509_STORE *store = SSL_CTX_get_cert_store (ctx);
+    int loaded = 0;
+    const char *name;
+    while ((name = g_dir_read_name (d)) != NULL) {
+        char *path = g_build_filename (dir, name, NULL);
+        FILE *f = fopen (path, "rb");
+        g_free (path);
+        if (f == NULL)
+            continue;
+        X509 *cert;
+        /* A file may hold more than one certificate. */
+        while ((cert = PEM_read_X509 (f, NULL, NULL, NULL)) != NULL) {
+            if (X509_STORE_add_cert (store, cert) == 1)
+                loaded++;
+            X509_free (cert);
+        }
+        ERR_clear_error (); /* the loop ends on a parse error; that's expected */
+        fclose (f);
+    }
+    g_dir_close (d);
+    return loaded > 0;
+}
+
 static void
 load_system_ca (SSL_CTX *ctx)
 {
@@ -45,18 +78,21 @@ load_system_ca (SSL_CTX *ctx)
             SSL_CTX_load_verify_locations (ctx, bundles[i], NULL) == 1)
             return;
 
-    /* No bundle file: fall back to a hashed CA directory. Android ships only
-     * this form — without it every verified connection fails there, which takes
-     * the whole Cloudflare path down and leaves just the blocked direct route. */
+    /* No bundle file: read a CA directory ourselves. Android ships only this
+     * form, and pointing OpenSSL at it as a CApath is not enough — lookups there
+     * go by the hash encoded in the filename, and Android's names do not match
+     * what this OpenSSL computes, so the load "succeeds" and then every
+     * verification fails. That takes the whole Cloudflare path down and leaves
+     * only the blocked direct route, which the client reports as a broken proxy.
+     * Loading each certificate explicitly sidesteps the naming entirely. */
     static const char *ca_dirs[] = {
-        "/apex/com.android.conscrypt/cacerts", /* Android 14+ (supersedes /system) */
         "/system/etc/security/cacerts",        /* Android */
+        "/apex/com.android.conscrypt/cacerts", /* Android 14+ */
         "/etc/ssl/certs",                      /* hashed dir where no bundle exists */
         NULL
     };
     for (int i = 0; ca_dirs[i] != NULL; i++)
-        if (g_file_test (ca_dirs[i], G_FILE_TEST_IS_DIR) &&
-            SSL_CTX_load_verify_locations (ctx, NULL, ca_dirs[i]) == 1)
+        if (load_ca_dir (ctx, ca_dirs[i]))
             return;
 
     SSL_CTX_set_default_verify_paths (ctx);
