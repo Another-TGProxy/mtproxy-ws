@@ -8,10 +8,41 @@
 
 #define READ_CHUNK 65536
 
+/* Telegram answers a session it cannot place — an auth key the front end does
+   not hold, a wrong DC — with a bare 4-byte transport error instead of a real
+   message. The client reports that as a lost connection, so without naming it
+   here the route that caused it is invisible from either end. */
+static void
+note_transport_error (const unsigned char *plain, gsize len,
+                      const char *route, gboolean *reported)
+{
+    if (*reported || len < 8)
+        return;
+    guint32 head = (guint32) plain[0] | ((guint32) plain[1] << 8)
+                 | ((guint32) plain[2] << 16) | ((guint32) plain[3] << 24);
+    gsize off;
+    if (head == 4)
+        off = 4;                    /* intermediate: length field of 4 */
+    else if (plain[0] == 0x01)
+        off = 1;                    /* abridged: one length byte of 4/4 */
+    else
+        return;
+    if (len < off + 4)
+        return;
+    gint32 code = (gint32) ((guint32) plain[off] | ((guint32) plain[off + 1] << 8)
+                          | ((guint32) plain[off + 2] << 16)
+                          | ((guint32) plain[off + 3] << 24));
+    if (code >= 0)
+        return;
+    *reported = TRUE;
+    g_message ("telegram refused the session: error %d (route %s)", code, route);
+}
+
 void
 bridge (TgwsProxy *p, ClientIO *cio, WsConn *ws, CryptoCtx *ctx,
-        MsgSplitter *splitter)
+        MsgSplitter *splitter, const char *route)
 {
+    gboolean err_reported = FALSE;
     unsigned char *inbuf = g_malloc (READ_CHUNK);
     unsigned char *plain = g_malloc (READ_CHUNK);
     unsigned char *cipher = g_malloc (READ_CHUNK);
@@ -78,6 +109,7 @@ bridge (TgwsProxy *p, ClientIO *cio, WsConn *ws, CryptoCtx *ctx,
                     unsigned char *p1 = g_malloc (dlen);
                     unsigned char *p2 = g_malloc (dlen);
                     tgws_aesctr_update (ctx->tg_dec, data, p1, (int) dlen);
+                    note_transport_error (p1, dlen, route, &err_reported);
                     tgws_aesctr_update (ctx->clt_enc, p1, p2, (int) dlen);
                     stats_add (p, 0, 0, 0, (gint64) dlen);
                     if (!cio_write_all (cio, p2, dlen))

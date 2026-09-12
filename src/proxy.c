@@ -324,7 +324,11 @@ do_fallback (TgwsProxy *p, ClientIO *cio, int dc, gboolean media,
             }
             if (ws) {
                 if (ws_send (ws, relay_init, HANDSHAKE_LEN))
-                    bridge (p, cio, ws, ctx, splitter);
+                    {
+                        char rb[64];
+                        g_snprintf (rb, sizeof (rb), "cf-worker dc%d%s", dc, mtag);
+                        bridge (p, cio, ws, ctx, splitter, rb);
+                    }
                 ws_free (ws);
                 return TRUE;
             }
@@ -346,7 +350,11 @@ do_fallback (TgwsProxy *p, ClientIO *cio, int dc, gboolean media,
             if (ws) {
                 vlog (p, "DC%d%s -> CF proxy %s", dc, mtag, dom);
                 if (ws_send (ws, relay_init, HANDSHAKE_LEN))
-                    bridge (p, cio, ws, ctx, splitter);
+                    {
+                        char rb[64];
+                        g_snprintf (rb, sizeof (rb), "cf-proxy dc%d%s", dc, mtag);
+                        bridge (p, cio, ws, ctx, splitter, rb);
+                    }
                 ws_free (ws);
                 return TRUE;
             }
@@ -393,6 +401,8 @@ serve_client (TgwsProxy *p, ClientIO *cio, const char *peer)
     guint32 proto_int = ((guint32) proto[0] << 24) | ((guint32) proto[1] << 16) | ((guint32) proto[2] << 8) | proto[3];
 
     gint16 dc_idx = (gint16) (media ? -dc : dc);
+    char dctag[32];
+    g_snprintf (dctag, sizeof (dctag), "dc%d%s", dc, media ? " media" : "");
     unsigned char relay_init[HANDSHAKE_LEN];
     generate_relay_init (proto, dc_idx, relay_init);
 
@@ -404,6 +414,9 @@ serve_client (TgwsProxy *p, ClientIO *cio, const char *peer)
 
     const char *ip = g_hash_table_lookup (p->dc_redirects, GINT_TO_POINTER (dc));
     if (ip != NULL) {
+        char route_buf[64];
+        const char *route = route_buf;
+        g_snprintf (route_buf, sizeof (route_buf), "pool %s", dctag);
         ws = pool_get (p, dc, media);
         if (ws)
             vlog (p, "DC%d%s -> WS pool hit via %s", dc, media ? " media" : "", ip);
@@ -411,13 +424,16 @@ serve_client (TgwsProxy *p, ClientIO *cio, const char *peer)
             char dbuf[64];
             const char *domain = ws_domain_for (dc, media, i, dbuf, sizeof (dbuf));
             ws = ws_connect_host (ip, domain, "/apiws", FALSE);
-            if (ws)
+            if (ws) {
+                g_snprintf (route_buf, sizeof (route_buf), "%s %s",
+                            (i == 0) ? "direct" : "direct-alt", dctag);
                 vlog (p, "DC%d%s -> wss://%s/apiws via %s",
                       dc, media ? " media" : "", domain, ip);
+            }
         }
         if (ws) {
             if (ws_send (ws, relay_init, HANDSHAKE_LEN))
-                bridge (p, cio, ws, &ctx, splitter);
+                bridge (p, cio, ws, &ctx, splitter, route);
             routed = TRUE;
         } else {
             vlog (p, "DC%d%s direct WS failed -> fallback", dc, media ? " media" : "");
