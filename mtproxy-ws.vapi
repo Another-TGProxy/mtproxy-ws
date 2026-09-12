@@ -44,6 +44,8 @@ namespace TgWsProxy {
         public int64 bytes_up ();
         [CCode (cname = "tgws_proxy_bytes_down")]
         public int64 bytes_down ();
+        [CCode (cname = "tgws_proxy_bad_handshakes")]
+        public int64 bad_handshakes ();
     }
 
     [CCode (cname = "tgws_engine_selftest", cheader_filename = "proxy.h")]

@@ -66,6 +66,10 @@ TGWS_PUBLIC gint64 tgws_proxy_connections_total (TgwsProxy *self);
 TGWS_PUBLIC gint64 tgws_proxy_connections_active (TgwsProxy *self);
 TGWS_PUBLIC gint64 tgws_proxy_bytes_up (TgwsProxy *self);
 TGWS_PUBLIC gint64 tgws_proxy_bytes_down (TgwsProxy *self);
+/* Connections rejected at the handshake, i.e. someone connecting with the wrong
+ * secret. A steadily rising count means a client is still configured with an old
+ * one; the engine throttles it, but only the user can fix it. */
+TGWS_PUBLIC gint64 tgws_proxy_bad_handshakes (TgwsProxy *self);
 
 TGWS_PUBLIC void tgws_proxy_free (TgwsProxy *self);
 

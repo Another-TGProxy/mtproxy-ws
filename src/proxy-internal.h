@@ -41,6 +41,16 @@ struct _TgwsProxy {
     GMutex conns_lock;
     GHashTable *client_fds;     /* set of live client fds; shutdown() on stop to unblock reads */
 
+    /* A client left with a stale secret retries forever, hundreds of times a
+     * second, and every attempt costs a thread and a log line. Failures are
+     * counted per source address; one that floods is refused right after accept
+     * for a moment, before anything is allocated. */
+    GMutex badhs_lock;
+    GHashTable *bad_peers;      /* char* addr -> BadPeer* */
+    gint64 badhs_report_us;     /* when the aggregated line was last written */
+    int badhs_unreported;       /* failures since then */
+    gint64 badhs_total;         /* failures since start; read by the GUI */
+
     GMutex stats_lock;
     gint64 conn_total;
     gint64 conn_active;

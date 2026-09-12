@@ -89,7 +89,144 @@ typedef struct
 {
     TgwsProxy *proxy;
     int client_fd;
+    char peer[INET6_ADDRSTRLEN];
 } ConnArgs;
+
+/* Wrong-secret storm defence. A peer that fails BADHS_BURST handshakes inside
+ * BADHS_WINDOW_US is refused for BADHS_BLOCK_US: the attempts then cost one
+ * accept() and one close() instead of a thread, a read and a log line. Numbers
+ * are far above what a working client does (it handshakes once per connection
+ * and keeps it), and the block is short enough that a client which has just
+ * been given the right secret gets in on its next retry. */
+#define BADHS_WINDOW_US  G_GINT64_CONSTANT (1000000)
+#define BADHS_BURST      40
+#define BADHS_BLOCK_US   G_GINT64_CONSTANT (3000000)
+/* How often the aggregated "N bad handshakes" line may be written. */
+#define BADHS_REPORT_US  G_GINT64_CONSTANT (10000000)
+
+/* A peer that keeps failing has its close delayed: the client opens its next
+ * attempt as soon as the last one is closed, so holding the failed connection
+ * open puts a ceiling on how fast it can retry (1 s / delay). It costs one
+ * sleeping thread per failing connection and nothing at all to a client that
+ * handshakes correctly. Blocking the address outright is reserved for peers
+ * that are not this machine: a local proxy sees every client as 127.0.0.1, so
+ * blocking it would take the working client down with the broken one. */
+#define BADHS_DELAY_AFTER 3
+#define BADHS_DELAY_STEP_US G_GINT64_CONSTANT (100000)
+#define BADHS_DELAY_MAX_US  G_GINT64_CONSTANT (1000000)
+
+static gboolean
+addr_is_loopback (const char *addr)
+{
+    return g_str_has_prefix (addr, "127.") || g_strcmp0 (addr, "::1") == 0;
+}
+
+typedef struct
+{
+    gint64 window_start_us;
+    int fails;
+    gint64 blocked_until_us;    /* remote peers only; see addr_is_loopback */
+} BadPeer;
+
+/* Entries older than this window carry no penalty any more, so they are dropped
+ * once the table grows past BADHS_PEERS_MAX. */
+#define BADHS_PEERS_MAX  1024
+#define BADHS_STALE_US   G_GINT64_CONSTANT (60000000)
+
+/* Called with badhs_lock held. */
+static void
+bad_peers_prune (TgwsProxy *p, gint64 now)
+{
+    GHashTableIter it;
+    gpointer key, val;
+    g_hash_table_iter_init (&it, p->bad_peers);
+    while (g_hash_table_iter_next (&it, &key, &val)) {
+        BadPeer *bp = val;
+        if (now - bp->window_start_us > BADHS_STALE_US && now >= bp->blocked_until_us)
+            g_hash_table_iter_remove (&it);
+    }
+}
+
+/* TRUE when this connection should be dropped without spending a thread on it. */
+static gboolean
+bad_peer_blocked (TgwsProxy *p, const char *addr)
+{
+    if (addr[0] == '\0' || addr_is_loopback (addr))
+        return FALSE;
+    gboolean blocked = FALSE;
+    g_mutex_lock (&p->badhs_lock);
+    BadPeer *bp = g_hash_table_lookup (p->bad_peers, addr);
+    if (bp != NULL)
+        blocked = g_get_monotonic_time () < bp->blocked_until_us;
+    g_mutex_unlock (&p->badhs_lock);
+    return blocked;
+}
+
+/* Count one failed handshake from @addr and return how long to hold the doomed
+   connection open before closing it. Blocks a remote peer that is flooding, and
+   reports the total at most once per BADHS_REPORT_US. */
+static gint64
+bad_peer_note (TgwsProxy *p, const char *addr)
+{
+    gint64 now = g_get_monotonic_time ();
+    gboolean just_blocked = FALSE;
+    gint64 delay = 0;
+    int unreported = 0;
+
+    g_mutex_lock (&p->badhs_lock);
+    if (addr[0] != '\0') {
+        BadPeer *bp = g_hash_table_lookup (p->bad_peers, addr);
+        if (bp == NULL) {
+            /* One entry per source address, so a scan from many addresses would
+             * grow the table without bound: drop the ones that have gone quiet,
+             * and once even those don't free room, stop tracking new addresses
+             * rather than grow (the flood is already being reported). */
+            if (g_hash_table_size (p->bad_peers) >= BADHS_PEERS_MAX)
+                bad_peers_prune (p, now);
+            if (g_hash_table_size (p->bad_peers) < BADHS_PEERS_MAX) {
+                bp = g_new0 (BadPeer, 1);
+                bp->window_start_us = now;
+                g_hash_table_insert (p->bad_peers, g_strdup (addr), bp);
+            }
+        }
+        if (bp != NULL) {
+            /* Halved rather than cleared per window: a peer that keeps flooding
+             * keeps its penalty, while one that failed once is forgiven within
+             * seconds. */
+            if (now - bp->window_start_us > BADHS_WINDOW_US) {
+                bp->window_start_us = now;
+                bp->fails /= 2;
+            }
+            bp->fails++;
+            if (bp->fails > BADHS_DELAY_AFTER)
+                delay = MIN ((gint64) (bp->fails - BADHS_DELAY_AFTER) * BADHS_DELAY_STEP_US,
+                             BADHS_DELAY_MAX_US);
+            if (bp->fails >= BADHS_BURST && !addr_is_loopback (addr)
+                && now >= bp->blocked_until_us) {
+                bp->blocked_until_us = now + BADHS_BLOCK_US;
+                bp->fails = 0;
+                just_blocked = TRUE;
+            }
+        }
+    }
+    p->badhs_total++;
+    p->badhs_unreported++;
+    if (now - p->badhs_report_us > BADHS_REPORT_US) {
+        p->badhs_report_us = now;
+        unreported = p->badhs_unreported;
+        p->badhs_unreported = 0;
+    }
+    g_mutex_unlock (&p->badhs_lock);
+
+    if (unreported > 0)
+        g_message ("%d bad handshakes (wrong secret or proto); "
+                   "a client is probably configured with an old secret",
+                   unreported);
+    if (just_blocked)
+        g_message ("%s is flooding wrong-secret handshakes — refusing it for %d s",
+                   addr, (int) (BADHS_BLOCK_US / 1000000));
+    return delay;
+}
 
 /* Read the client's MTProto handshake (HANDSHAKE_LEN bytes) into init. With
    fake-TLS masking it first verifies the TLS ClientHello, replies with a
@@ -234,7 +371,7 @@ do_fallback (TgwsProxy *p, ClientIO *cio, int dc, gboolean media,
    The early exits return before any resource is allocated, so the
    post-handshake flow is linear down to a single cleanup. */
 static void
-serve_client (TgwsProxy *p, ClientIO *cio)
+serve_client (TgwsProxy *p, ClientIO *cio, const char *peer)
 {
     unsigned char init[HANDSHAKE_LEN];
     if (!read_client_init (p, cio, init))
@@ -245,7 +382,11 @@ serve_client (TgwsProxy *p, ClientIO *cio)
     unsigned char proto[4];
     unsigned char prekey_iv[48];
     if (!try_handshake (init, p->secret, &dc, &media, proto, prekey_iv)) {
-        vlog (p, "bad handshake (wrong secret or proto)");
+        gint64 penalty = bad_peer_note (p, peer);
+        /* Sliced so stop() still tears the connection down promptly. */
+        for (gint64 slept = 0; slept < penalty && g_atomic_int_get (&p->running);
+             slept += 50000)
+            g_usleep (50000);
         return;
     }
 
@@ -323,6 +464,8 @@ handle_client (gpointer data)
     ConnArgs *args = data;
     TgwsProxy *p = args->proxy;
     int client_fd = args->client_fd;
+    char args_peer[INET6_ADDRSTRLEN];
+    g_strlcpy (args_peer, args->peer, sizeof (args_peer));
     g_free (args);
 
     stats_add (p, 1, 1, 0, 0);
@@ -332,7 +475,7 @@ handle_client (gpointer data)
     tgws_set_io_timeout (client_fd, CLIENT_IO_TIMEOUT);
 
     ClientIO cio = { client_fd, FALSE, g_byte_array_new () };
-    serve_client (p, &cio);
+    serve_client (p, &cio, args_peer);
 
     g_byte_array_free (cio.rbuf, TRUE);
     conn_unregister (p, client_fd);
@@ -382,6 +525,16 @@ listen_loop (gpointer data)
             close_socket (cfd);
             break;
         }
+        char peer[INET6_ADDRSTRLEN];
+        peer[0] = '\0';
+        getnameinfo ((struct sockaddr *) &ca, calen, peer, sizeof (peer),
+                     NULL, 0, NI_NUMERICHOST);
+        /* Refuse a peer that is flooding wrong-secret handshakes before it costs
+         * a thread; see bad_peer_note. */
+        if (bad_peer_blocked (p, peer)) {
+            close_socket (cfd);
+            continue;
+        }
         /* Refuse beyond the concurrency cap instead of spawning unbounded threads. */
         if (p->max_conns > 0 && g_atomic_int_get (&p->active_conns) >= p->max_conns) {
             vlog (p, "connection cap (%d) reached — refusing", p->max_conns);
@@ -400,6 +553,7 @@ listen_loop (gpointer data)
         ConnArgs *args = g_new0 (ConnArgs, 1);
         args->proxy = p;
         args->client_fd = cfd;
+        g_strlcpy (args->peer, peer, sizeof (args->peer));
         GThread *t = g_thread_new ("tgws-client", handle_client, args);
         g_thread_unref (t); /* detached; counted via active_conns, joined in stop() */
     }
@@ -436,6 +590,8 @@ tgws_proxy_new (const char *host, guint16 port, const unsigned char *secret16)
     p->max_conns = DEFAULT_MAX_CONNS;
     g_mutex_init (&p->conns_lock);
     p->client_fds = g_hash_table_new (g_direct_hash, g_direct_equal);
+    g_mutex_init (&p->badhs_lock);
+    p->bad_peers = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
     g_mutex_init (&p->stats_lock);
     return p;
 }
@@ -564,6 +720,13 @@ void tgws_proxy_stop (TgwsProxy *p)
     g_mutex_unlock (&p->conns_lock);
 }
 
+gint64 tgws_proxy_bad_handshakes (TgwsProxy *p)
+{
+    g_mutex_lock (&p->badhs_lock);
+    gint64 v = p->badhs_total;
+    g_mutex_unlock (&p->badhs_lock);
+    return v;
+}
 gint64 tgws_proxy_connections_total (TgwsProxy *p)
 {
     g_mutex_lock (&p->stats_lock);
@@ -624,6 +787,8 @@ void tgws_proxy_free (TgwsProxy *p)
     g_free (p->fake_tls_domain);
     g_hash_table_destroy (p->client_fds);
     g_mutex_clear (&p->conns_lock);
+    g_hash_table_destroy (p->bad_peers);
+    g_mutex_clear (&p->badhs_lock);
     g_mutex_clear (&p->stats_lock);
     g_free (p->host);
     g_free (p);
