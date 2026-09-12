@@ -1,7 +1,7 @@
 # mtproxy-ws — self-contained C package: the MTProto<->WebSocket proxy engine as
 # a shared library, a headless CLI, and a Vala binding. Pure C, no GTK/Vala.
 project('mtproxy-ws', 'c',
-  version: '2.0.0',
+  version: '2.1.0',
   meson_version: '>= 0.62',
   default_options: ['warning_level=2', 'c_std=gnu11'],
   license: 'GPL-3.0-or-later',
