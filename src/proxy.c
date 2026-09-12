@@ -342,6 +342,8 @@ handle_client (gpointer data)
     return NULL;
 }
 
+static int open_listener (TgwsProxy *p, gboolean quiet);
+
 static gpointer
 listen_loop (gpointer data)
 {
@@ -353,7 +355,28 @@ listen_loop (gpointer data)
         if (cfd < 0) {
             if (errno == EINTR)
                 continue;
-            break; /* listen_fd shut down */
+            if (!g_atomic_int_get (&p->running))
+                break; /* stop() closed the listener */
+            /* The OS can tear the listening socket down on its own — Windows
+             * does it as WinError 64 (ERROR_NETNAME_DELETED) after adapter or
+             * link changes. Leaving the loop here would keep the engine flagged
+             * as running while nothing accepts any more, so rebuild instead. */
+            g_warning ("accept failed (%s); rebuilding the listener",
+                       g_strerror (errno));
+            close_socket (p->listen_fd);
+            p->listen_fd = -1;
+            int nfd = -1;
+            for (int attempt = 0; attempt < 30 && g_atomic_int_get (&p->running); attempt++) {
+                nfd = open_listener (p, TRUE);
+                if (nfd >= 0)
+                    break;
+                g_usleep (500000);
+            }
+            if (nfd < 0)
+                break; /* port is gone for good; stop accepting */
+            p->listen_fd = nfd;
+            g_message ("Listening on %s:%u again", p->host, p->port);
+            continue;
         }
         if (!g_atomic_int_get (&p->running)) {
             close_socket (cfd);
@@ -404,6 +427,10 @@ tgws_proxy_new (const char *host, guint16 port, const unsigned char *secret16)
     p->pool_refilling = g_hash_table_new (g_direct_hash, g_direct_equal);
     p->worker_pool = g_hash_table_new (g_direct_hash, g_direct_equal);
     p->worker_refilling = g_hash_table_new (g_direct_hash, g_direct_equal);
+    p->pool_backoff = g_hash_table_new_full (g_direct_hash, g_direct_equal,
+                                             NULL, g_free);
+    p->worker_backoff = g_hash_table_new_full (g_direct_hash, g_direct_equal,
+                                               NULL, g_free);
     g_mutex_init (&p->pool_lock);
     p->listen_fd = -1;
     p->max_conns = DEFAULT_MAX_CONNS;
@@ -461,12 +488,14 @@ void tgws_proxy_set_fake_tls (TgwsProxy *p, const char *domain)
                              : NULL;
 }
 
-gboolean
-tgws_proxy_start (TgwsProxy *p)
+/* Bind and listen on host:port. Also used to rebuild the listener if the OS
+ * tears it down under us (see listen_loop). Returns -1 on failure. */
+static int
+open_listener (TgwsProxy *p, gboolean quiet)
 {
     int fd = socket (AF_INET, SOCK_STREAM, 0);
     if (fd < 0)
-        return FALSE;
+        return -1;
     int one = 1;
     setsockopt (fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof (one));
 
@@ -476,23 +505,34 @@ tgws_proxy_start (TgwsProxy *p)
     sa.sin_port = htons (p->port);
     if (inet_pton (AF_INET, p->host, &sa.sin_addr) != 1) {
         close_socket (fd);
-        return FALSE;
+        return -1;
     }
     if (bind (fd, (struct sockaddr *) &sa, sizeof (sa)) != 0) {
-        g_warning ("bind %s:%u failed: %s", p->host, p->port, g_strerror (errno));
+        if (!quiet)
+            g_warning ("bind %s:%u failed: %s", p->host, p->port, g_strerror (errno));
         close_socket (fd);
-        return FALSE;
+        return -1;
     }
     if (listen (fd, 128) != 0) {
         close_socket (fd);
-        return FALSE;
+        return -1;
     }
     setsockopt (fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof (one));
+    return fd;
+}
+
+gboolean
+tgws_proxy_start (TgwsProxy *p)
+{
+    int fd = open_listener (p, FALSE);
+    if (fd < 0)
+        return FALSE;
 
     p->listen_fd = fd;
     g_atomic_int_set (&p->running, 1);
     p->listen_thread = g_thread_new ("tgws-listen", listen_loop, p);
     pool_warmup (p);
+    pool_rotate_start (p);
     g_message ("Listening on %s:%u", p->host, p->port);
     return TRUE;
 }
@@ -558,6 +598,9 @@ void tgws_proxy_free (TgwsProxy *p)
     if (!p)
         return;
     tgws_proxy_stop (p);
+    /* Joined here rather than in stop(): the rotator sleeps in slices, and
+     * stop() must stay non-blocking for Android's UI thread. */
+    pool_rotate_stop (p);
     /* Wait for the detached per-client + pool-refill threads to finish before
      * destroying the mutexes/arrays they touch (use-after-free guard). stop()
      * already shut their fds down, so they drain promptly. */
@@ -572,6 +615,8 @@ void tgws_proxy_free (TgwsProxy *p)
     g_hash_table_destroy (p->pool_refilling);
     g_hash_table_destroy (p->worker_pool);
     g_hash_table_destroy (p->worker_refilling);
+    g_hash_table_destroy (p->pool_backoff);
+    g_hash_table_destroy (p->worker_backoff);
     g_mutex_clear (&p->pool_lock);
     g_hash_table_destroy (p->dc_redirects);
     g_ptr_array_free (p->cf_domains, TRUE);

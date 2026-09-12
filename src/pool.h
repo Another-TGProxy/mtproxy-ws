@@ -21,6 +21,13 @@ WsConn *pool_worker_get (TgwsProxy *p, int dc, int widx);
 /* Kick off background refills for every configured DC redirect. */
 void pool_warmup (TgwsProxy *p);
 
+/* Start/stop the rotator: a thread that evicts aged-out and dead connections
+ * from both pools every POOL_ROTATE_INTERVAL and refills what it emptied.
+ * Without it a connection the peer closed while idle would sit in the queue
+ * until someone asks for it, and that someone gets a dead channel. */
+void pool_rotate_start (TgwsProxy *p);
+void pool_rotate_stop (TgwsProxy *p);
+
 /* Close and free every pooled connection. */
 void pool_drain (TgwsProxy *p);
 

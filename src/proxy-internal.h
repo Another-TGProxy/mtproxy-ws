@@ -26,7 +26,10 @@ struct _TgwsProxy {
     GHashTable *pool_refilling; /* key -> 1 while a refill thread is in flight */
     GHashTable *worker_pool;    /* key (dc<<8|widx) -> GQueue* of PoolEntry* */
     GHashTable *worker_refilling;
-    GMutex pool_lock;           /* guards both pools and their refilling sets */
+    GHashTable *pool_backoff;   /* key -> PoolBackoff* for the (dc,media) pool */
+    GHashTable *worker_backoff; /* key -> PoolBackoff* for the worker pool */
+    GMutex pool_lock;           /* guards both pools, their refilling sets and backoff */
+    GThread *rotator_thread;    /* evicts stale/dead pooled conns; see pool_rotate_start */
 
     int listen_fd;
     GThread *listen_thread;
