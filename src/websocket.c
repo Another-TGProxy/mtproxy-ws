@@ -45,6 +45,20 @@ load_system_ca (SSL_CTX *ctx)
             SSL_CTX_load_verify_locations (ctx, bundles[i], NULL) == 1)
             return;
 
+    /* No bundle file: fall back to a hashed CA directory. Android ships only
+     * this form — without it every verified connection fails there, which takes
+     * the whole Cloudflare path down and leaves just the blocked direct route. */
+    static const char *ca_dirs[] = {
+        "/apex/com.android.conscrypt/cacerts", /* Android 14+ (supersedes /system) */
+        "/system/etc/security/cacerts",        /* Android */
+        "/etc/ssl/certs",                      /* hashed dir where no bundle exists */
+        NULL
+    };
+    for (int i = 0; ca_dirs[i] != NULL; i++)
+        if (g_file_test (ca_dirs[i], G_FILE_TEST_IS_DIR) &&
+            SSL_CTX_load_verify_locations (ctx, NULL, ca_dirs[i]) == 1)
+            return;
+
     SSL_CTX_set_default_verify_paths (ctx);
 }
 
