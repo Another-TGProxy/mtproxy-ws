@@ -21,8 +21,11 @@ note_transport_error (const unsigned char *plain, gsize len,
     guint32 head = (guint32) plain[0] | ((guint32) plain[1] << 8)
                  | ((guint32) plain[2] << 16) | ((guint32) plain[3] << 24);
     gsize off;
-    if (head == 4)
-        off = 4;                    /* intermediate: length field of 4 */
+    /* The padded variant (the dd-prefixed secret most clients use) adds up to
+       three bytes of padding to the length, so the field reads 4..7 for the same
+       four-byte error. Matching only 4 misses every padded session. */
+    if (head >= 4 && head <= 7)
+        off = 4;                    /* intermediate, padded or not */
     else if (plain[0] == 0x01)
         off = 1;                    /* abridged: one length byte of 4/4 */
     else
@@ -130,6 +133,7 @@ bridge (TgwsProxy *p, ClientIO *cio, WsConn *ws, CryptoCtx *ctx,
 void
 tcp_bridge (TgwsProxy *p, ClientIO *cio, int remote_fd, CryptoCtx *ctx)
 {
+    gboolean err_reported = FALSE;
     unsigned char *inbuf = g_malloc (READ_CHUNK);
     unsigned char *p1 = g_malloc (READ_CHUNK);
     unsigned char *p2 = g_malloc (READ_CHUNK);
@@ -168,6 +172,7 @@ tcp_bridge (TgwsProxy *p, ClientIO *cio, int remote_fd, CryptoCtx *ctx)
                 alive = FALSE;
             } else {
                 tgws_aesctr_update (ctx->tg_dec, inbuf, p1, (int) n);
+                note_transport_error (p1, (gsize) n, "tcp", &err_reported);
                 tgws_aesctr_update (ctx->clt_enc, p1, p2, (int) n);
                 stats_add (p, 0, 0, 0, n);
                 if (!cio_write_all (cio, p2, n))
