@@ -71,14 +71,20 @@ stats_add (TgwsProxy *p, gint64 d_total, gint64 d_active,
     g_mutex_unlock (&p->stats_lock);
 }
 
+/* kws{dc} fronts the DC's main cluster and kws{dc}-1 its media cluster; the two
+ * hold different auth keys. They are not alternatives for one another: they
+ * resolve to the same address here (the dc_ip redirect), so trying the other
+ * one after a failure does not open a second path, it lands the session on a
+ * cluster that does not know its key. Telegram then answers -404 or -444, and
+ * the client reports the proxy as misconfigured and turns it off. Measured on
+ * the reporter's phone: every single refusal came from a session or a pooled
+ * connection that had been sent to the other host. */
 const char *
-ws_domain_for (int dc, gboolean media, int idx, char *buf, gsize buflen)
+ws_domain_for (int dc, gboolean media, char *buf, gsize buflen)
 {
     if (dc == 203)
         dc = 2;
-    /* media: [kws{dc}-1, kws{dc}]; non-media: [kws{dc}, kws{dc}-1] */
-    gboolean dash = media ? (idx == 0) : (idx == 1);
-    if (dash)
+    if (media)
         g_snprintf (buf, buflen, "kws%d-1.web.telegram.org", dc);
     else
         g_snprintf (buf, buflen, "kws%d.web.telegram.org", dc);
@@ -335,8 +341,13 @@ do_fallback (TgwsProxy *p, ClientIO *cio, int dc, gboolean media,
         }
     }
 
-    /* 2) CF proxy: WSS to kws{dc}.{base} (user domains, else built-ins) */
-    if (p->cfproxy) {
+    /* 2) CF proxy: WSS to kws{dc}.{base} (user domains, else built-ins).
+     * These relays front the DC's main cluster only — there is no kws{dc}-1
+     * variant of them — so a media session sent this way reaches a cluster that
+     * does not hold its key and Telegram refuses it with -404. Media therefore
+     * skips this hop and falls through to the plain TCP route below, which
+     * carries the media flag in the header the DC itself reads. */
+    if (p->cfproxy && !media) {
         guint n = p->cf_domains->len > 0 ? p->cf_domains->len
                                          : G_N_ELEMENTS (CF_DEFAULT_DOMAINS);
         int wsdc = (dc == 203) ? 2 : dc;
@@ -417,21 +428,17 @@ serve_client (TgwsProxy *p, ClientIO *cio, const char *peer)
         char route_buf[64];
         const char *route = route_buf;
         g_snprintf (route_buf, sizeof (route_buf), "pool %s", dctag);
-        gboolean pool_alt = FALSE;
-        ws = pool_get (p, dc, media, &pool_alt);
+        ws = pool_get (p, dc, media);
         if (ws) {
-            g_snprintf (route_buf, sizeof (route_buf), "pool%s %s",
-                        pool_alt ? "-alt" : "", dctag);
-            vlog (p, "DC%d%s -> WS pool hit via %s%s", dc, media ? " media" : "", ip,
-                  pool_alt ? " (warmed on the -1 host)" : "");
+            g_snprintf (route_buf, sizeof (route_buf), "pool %s", dctag);
+            vlog (p, "DC%d%s -> WS pool hit via %s", dc, media ? " media" : "", ip);
         }
-        for (int i = 0; i < 2 && !ws; i++) {
+        if (!ws) {
             char dbuf[64];
-            const char *domain = ws_domain_for (dc, media, i, dbuf, sizeof (dbuf));
+            const char *domain = ws_domain_for (dc, media, dbuf, sizeof (dbuf));
             ws = ws_connect_host (ip, domain, "/apiws", FALSE);
             if (ws) {
-                g_snprintf (route_buf, sizeof (route_buf), "%s %s",
-                            (i == 0) ? "direct" : "direct-alt", dctag);
+                g_snprintf (route_buf, sizeof (route_buf), "direct %s", dctag);
                 vlog (p, "DC%d%s -> wss://%s/apiws via %s",
                       dc, media ? " media" : "", domain, ip);
             }

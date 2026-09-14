@@ -62,9 +62,8 @@ struct _TgwsProxy {
 void stats_add (TgwsProxy *p, gint64 d_total, gint64 d_active,
                 gint64 d_up, gint64 d_down);
 
-/* WS hostname for (dc, media, idx in {0,1}); writes into buf, returns buf. */
-const char *ws_domain_for (int dc, gboolean media, int idx,
-                           char *buf, gsize buflen);
+/* WS hostname for (dc, media); writes into buf, returns buf. */
+const char *ws_domain_for (int dc, gboolean media, char *buf, gsize buflen);
 
 /* Default TCP/CF fallback target IP for @dc, or NULL if unknown. */
 const char *dc_default_ip (int dc);

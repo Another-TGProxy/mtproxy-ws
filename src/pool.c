@@ -16,7 +16,6 @@ typedef struct
 {
     WsConn *ws;
     gint64 created; /* g_get_real_time(); see pool_entry_expired */
-    gboolean alt;   /* warmed on the second domain; see pool_get */
 } PoolEntry;
 
 typedef struct
@@ -119,19 +118,16 @@ pool_refill_thread (gpointer data)
         for (int i = have; i < p->pool_size && g_atomic_int_get (&p->running); i++) {
             WsConn *ws = NULL;
             attempted = TRUE;
-            int used = 0;
-            for (int d = 0; d < 2 && !ws; d++) {
-                char buf[64];
-                ws = ws_connect_host (ip, ws_domain_for (dc, media, d, buf, sizeof (buf)),
-                                      "/apiws", FALSE);
-                used = d;
-            }
+            /* Only this queue's own host: an entry warmed against the other
+               cluster is refused the moment a client uses it. */
+            char buf[64];
+            ws = ws_connect_host (ip, ws_domain_for (dc, media, buf, sizeof (buf)),
+                                  "/apiws", FALSE);
             if (!ws)
                 break;
             connected = TRUE;
             PoolEntry *e = g_new0 (PoolEntry, 1);
             e->ws = ws;
-            e->alt = (used != 0);
             e->created = g_get_real_time ();
             g_mutex_lock (&p->pool_lock);
             GQueue *qq = g_hash_table_lookup (p->pool, POOL_KEY (dc, media));
@@ -177,10 +173,8 @@ pool_schedule_refill (TgwsProxy *p, int dc, gboolean media)
 }
 
 WsConn *
-pool_get (TgwsProxy *p, int dc, gboolean media, gboolean *out_alt)
+pool_get (TgwsProxy *p, int dc, gboolean media)
 {
-    if (out_alt)
-        *out_alt = FALSE;
     if (p->pool_size <= 0)
         return NULL;
     gint64 now = g_get_real_time ();
@@ -194,12 +188,9 @@ pool_get (TgwsProxy *p, int dc, gboolean media, gboolean *out_alt)
             break;
         gboolean stale = pool_entry_expired (e, now, POOL_MAX_AGE_US);
         WsConn *ws = e->ws;
-        gboolean alt = e->alt;
         g_free (e);
         if (!stale && ws_alive (ws)) {
             ret = ws;
-            if (out_alt)
-                *out_alt = alt;
             break;
         }
         ws_free (ws);
