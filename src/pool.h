@@ -10,7 +10,10 @@
 
 /* Take a ready WS from the pool (NULL if none), discarding stale/dead ones, and
  * kick a background refill. */
-WsConn *pool_get (TgwsProxy *p, int dc, gboolean media);
+/* @out_alt reports whether the entry was warmed on the second domain
+   (kws{dc}-1): that host serves the media cluster, which holds a different auth
+   key, so a plain session landing there is refused by Telegram. */
+WsConn *pool_get (TgwsProxy *p, int dc, gboolean media, gboolean *out_alt);
 
 /* Same, for the CF-worker fallback path: a pre-warmed post-upgrade WSS to
  * worker_domains[widx] for @dc (the relay handshake is still sent per session by

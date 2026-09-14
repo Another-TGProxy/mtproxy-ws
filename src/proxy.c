@@ -417,9 +417,14 @@ serve_client (TgwsProxy *p, ClientIO *cio, const char *peer)
         char route_buf[64];
         const char *route = route_buf;
         g_snprintf (route_buf, sizeof (route_buf), "pool %s", dctag);
-        ws = pool_get (p, dc, media);
-        if (ws)
-            vlog (p, "DC%d%s -> WS pool hit via %s", dc, media ? " media" : "", ip);
+        gboolean pool_alt = FALSE;
+        ws = pool_get (p, dc, media, &pool_alt);
+        if (ws) {
+            g_snprintf (route_buf, sizeof (route_buf), "pool%s %s",
+                        pool_alt ? "-alt" : "", dctag);
+            vlog (p, "DC%d%s -> WS pool hit via %s%s", dc, media ? " media" : "", ip,
+                  pool_alt ? " (warmed on the -1 host)" : "");
+        }
         for (int i = 0; i < 2 && !ws; i++) {
             char dbuf[64];
             const char *domain = ws_domain_for (dc, media, i, dbuf, sizeof (dbuf));
