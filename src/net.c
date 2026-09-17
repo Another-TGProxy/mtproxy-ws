@@ -126,8 +126,104 @@ connect_timed (int fd, const struct sockaddr *addr, socklen_t len, int timeout_m
     return ok;
 }
 
+static int tcp_connect_direct (const char *host, int port);
+
+static char upstream_host[128];
+static int upstream_port;
+
+void
+tcp_set_upstream_socks (const char *host, int port)
+{
+    if (host == NULL || *host == '\0' || port <= 0) {
+        upstream_host[0] = '\0';
+        upstream_port = 0;
+        return;
+    }
+    g_strlcpy (upstream_host, host, sizeof (upstream_host));
+    upstream_port = port;
+}
+
+/* RFC 1928, no authentication, and the destination given as a name rather than
+ * an address: resolving it here would ask this machine's resolver where we are
+ * going, and on a network that answers such questions selectively it would also
+ * get the wrong answer. The far end resolves it. */
+static gboolean
+socks5_connect (int fd, const char *host, int port)
+{
+    unsigned char greet[3] = { 0x05, 0x01, 0x00 };
+    if (!fd_write_all (fd, greet, sizeof (greet)))
+        return FALSE;
+
+    unsigned char reply[2];
+    if (!fd_read_exact (fd, reply, sizeof (reply)))
+        return FALSE;
+    if (reply[0] != 0x05 || reply[1] != 0x00)
+        return FALSE;
+
+    gsize hlen = strlen (host);
+    if (hlen == 0 || hlen > 255)
+        return FALSE;
+
+    unsigned char req[262];
+    gsize n = 0;
+    req[n++] = 0x05;            /* version */
+    req[n++] = 0x01;            /* connect */
+    req[n++] = 0x00;            /* reserved */
+    req[n++] = 0x03;            /* the destination is a name */
+    req[n++] = (unsigned char) hlen;
+    memcpy (req + n, host, hlen);
+    n += hlen;
+    req[n++] = (unsigned char) ((port >> 8) & 0xff);
+    req[n++] = (unsigned char) (port & 0xff);
+    if (!fd_write_all (fd, req, n))
+        return FALSE;
+
+    unsigned char head[4];
+    if (!fd_read_exact (fd, head, sizeof (head)))
+        return FALSE;
+    if (head[0] != 0x05 || head[1] != 0x00)
+        return FALSE;
+
+    /* The bound address comes back in the reply and is of no use to us, but it
+     * has to be read off the socket before the tunnel's own bytes start. */
+    unsigned char skip[256];
+    switch (head[3]) {
+    case 0x01:
+        if (!fd_read_exact (fd, skip, 4 + 2)) return FALSE;
+        break;
+    case 0x04:
+        if (!fd_read_exact (fd, skip, 16 + 2)) return FALSE;
+        break;
+    case 0x03: {
+        unsigned char len;
+        if (!fd_read_exact (fd, &len, 1)) return FALSE;
+        if (!fd_read_exact (fd, skip, (gsize) len + 2)) return FALSE;
+        break;
+    }
+    default:
+        return FALSE;
+    }
+    return TRUE;
+}
+
 int
 tcp_connect_host (const char *host, int port)
+{
+    if (upstream_host[0] != '\0') {
+        int fd = tcp_connect_direct (upstream_host, upstream_port);
+        if (fd < 0)
+            return -1;
+        if (!socks5_connect (fd, host, port)) {
+            close_socket (fd);
+            return -1;
+        }
+        return fd;
+    }
+    return tcp_connect_direct (host, port);
+}
+
+static int
+tcp_connect_direct (const char *host, int port)
 {
     struct addrinfo hints, *res = NULL;
     memset (&hints, 0, sizeof (hints));

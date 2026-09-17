@@ -30,6 +30,9 @@ namespace TgWsProxy {
         [CCode (cname = "tgws_proxy_set_pool_size")]
         public void set_pool_size (int size);
 
+        [CCode (cname = "tgws_proxy_set_upstream_socks")]
+        public void set_upstream_socks (string? host, uint16 port);
+
         [CCode (cname = "tgws_proxy_start")]
         public bool start ();
 
@@ -46,6 +49,22 @@ namespace TgWsProxy {
         public int64 bytes_down ();
         [CCode (cname = "tgws_proxy_bad_handshakes")]
         public int64 bad_handshakes ();
+
+        [CCode (cname = "tgws_proxy_connections", array_length_type = "gsize")]
+        public ConnInfo[] connections ();
+    }
+
+    [CCode (cname = "TgwsConnInfo", cheader_filename = "proxy.h",
+            has_type_id = false)]
+    public struct ConnInfo {
+        // Fixed buffers inside the struct, read in place rather than copied.
+        public unowned string peer;
+        public int dc;
+        public bool media;
+        public unowned string route;
+        public int64 up;
+        public int64 down;
+        public int64 since_us;
     }
 
     [CCode (cname = "tgws_engine_selftest", cheader_filename = "proxy.h")]

@@ -377,8 +377,12 @@ do_fallback (TgwsProxy *p, ClientIO *cio, int dc, gboolean media,
         int rfd = tcp_connect_host (dst, 443);
         if (rfd >= 0) {
             vlog (p, "DC%d%s -> TCP fallback %s:443", dc, mtag, dst);
-            if (fd_write_all (rfd, relay_init, HANDSHAKE_LEN))
+            if (fd_write_all (rfd, relay_init, HANDSHAKE_LEN)) {
+                char rb[64];
+                g_snprintf (rb, sizeof (rb), "tcp dc%d%s", dc, mtag);
+                conn_note_route (p, cio->fd, rb);
                 tcp_bridge (p, cio, rfd, ctx);
+            }
             close_socket (rfd);
             return TRUE;
         }
@@ -410,6 +414,8 @@ serve_client (TgwsProxy *p, ClientIO *cio, const char *peer)
     }
 
     guint32 proto_int = ((guint32) proto[0] << 24) | ((guint32) proto[1] << 16) | ((guint32) proto[2] << 8) | proto[3];
+
+    conn_note_dc (p, cio->fd, dc, media);
 
     gint16 dc_idx = (gint16) (media ? -dc : dc);
     char dctag[32];
@@ -469,13 +475,80 @@ serve_client (TgwsProxy *p, ClientIO *cio, const char *peer)
  * against thread/fd exhaustion. tgws_proxy_set_max_conns(0) lifts it. */
 #define DEFAULT_MAX_CONNS 4096
 
-/* Track live client fds so stop() can shutdown() them and unblock their reads. */
+/* Track live client connections so stop() can shutdown() them and unblock their
+ * reads, and so a front end can be told who is on the proxy and where their
+ * traffic is going. */
 static void
-conn_register (TgwsProxy *p, int fd)
+conn_register (TgwsProxy *p, int fd, const char *peer)
+{
+    TgwsConnInfo *c = g_new0 (TgwsConnInfo, 1);
+    g_strlcpy (c->peer, peer != NULL ? peer : "", sizeof (c->peer));
+    c->dc = -1;
+    c->since_us = g_get_monotonic_time ();
+    g_strlcpy (c->route, "handshake", sizeof (c->route));
+
+    g_mutex_lock (&p->conns_lock);
+    g_hash_table_insert (p->client_fds, GINT_TO_POINTER (fd), c);
+    g_mutex_unlock (&p->conns_lock);
+}
+
+void
+conn_add_bytes (TgwsProxy *p, int fd, gint64 up, gint64 down)
 {
     g_mutex_lock (&p->conns_lock);
-    g_hash_table_add (p->client_fds, GINT_TO_POINTER (fd));
+    TgwsConnInfo *c = g_hash_table_lookup (p->client_fds, GINT_TO_POINTER (fd));
+    if (c != NULL) {
+        c->up += up;
+        c->down += down;
+    }
     g_mutex_unlock (&p->conns_lock);
+}
+
+void
+conn_note_dc (TgwsProxy *p, int fd, int dc, gboolean media)
+{
+    g_mutex_lock (&p->conns_lock);
+    TgwsConnInfo *c = g_hash_table_lookup (p->client_fds, GINT_TO_POINTER (fd));
+    if (c != NULL) {
+        c->dc = dc;
+        c->media = media;
+    }
+    g_mutex_unlock (&p->conns_lock);
+}
+
+void
+conn_note_route (TgwsProxy *p, int fd, const char *route)
+{
+    g_mutex_lock (&p->conns_lock);
+    TgwsConnInfo *c = g_hash_table_lookup (p->client_fds, GINT_TO_POINTER (fd));
+    if (c != NULL)
+        g_strlcpy (c->route, route != NULL ? route : "", sizeof (c->route));
+    g_mutex_unlock (&p->conns_lock);
+}
+
+TgwsConnInfo *
+tgws_proxy_connections (TgwsProxy *p, gsize *n_out)
+{
+    if (n_out != NULL)
+        *n_out = 0;
+    if (p == NULL)
+        return NULL;
+
+    g_mutex_lock (&p->conns_lock);
+    guint n = g_hash_table_size (p->client_fds);
+    TgwsConnInfo *out = n > 0 ? g_new0 (TgwsConnInfo, n) : NULL;
+    if (out != NULL) {
+        GHashTableIter it;
+        gpointer value;
+        guint i = 0;
+        g_hash_table_iter_init (&it, p->client_fds);
+        while (g_hash_table_iter_next (&it, NULL, &value) && i < n)
+            out[i++] = *(TgwsConnInfo *) value;
+        if (n_out != NULL)
+            *n_out = i;
+    }
+    g_mutex_unlock (&p->conns_lock);
+    return out;
 }
 
 static void
@@ -576,7 +649,7 @@ listen_loop (gpointer data)
             setsockopt (cfd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof (one));
         }
 #endif
-        conn_register (p, cfd);
+        conn_register (p, cfd, peer);
         g_atomic_int_add (&p->active_conns, 1);
         ConnArgs *args = g_new0 (ConnArgs, 1);
         args->proxy = p;
@@ -617,7 +690,8 @@ tgws_proxy_new (const char *host, guint16 port, const unsigned char *secret16)
     p->listen_fd = -1;
     p->max_conns = DEFAULT_MAX_CONNS;
     g_mutex_init (&p->conns_lock);
-    p->client_fds = g_hash_table_new (g_direct_hash, g_direct_equal);
+    p->client_fds = g_hash_table_new_full (g_direct_hash, g_direct_equal,
+                                           NULL, g_free);
     g_mutex_init (&p->badhs_lock);
     p->bad_peers = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
     g_mutex_init (&p->stats_lock);
@@ -627,6 +701,16 @@ tgws_proxy_new (const char *host, guint16 port, const unsigned char *secret16)
 void tgws_proxy_set_pool_size (TgwsProxy *p, int size)
 {
     p->pool_size = (size < 0) ? 0 : size;
+}
+
+void tgws_proxy_set_upstream_socks (TgwsProxy *p, const char *host, guint16 port)
+{
+    if (p == NULL)
+        return;
+    g_free (p->upstream_host);
+    p->upstream_host = (host != NULL && *host != '\0' && port != 0)
+        ? g_strdup (host) : NULL;
+    p->upstream_port = p->upstream_host != NULL ? port : 0;
 }
 
 void tgws_proxy_set_max_conns (TgwsProxy *p, int max_conns)
@@ -711,6 +795,9 @@ tgws_proxy_start (TgwsProxy *p)
     int fd = open_listener (p, FALSE);
     if (fd < 0)
         return FALSE;
+
+    /* Before any connection is opened, and before the pool warms itself. */
+    tcp_set_upstream_socks (p->upstream_host, p->upstream_port);
 
     p->listen_fd = fd;
     g_atomic_int_set (&p->running, 1);
@@ -813,6 +900,7 @@ void tgws_proxy_free (TgwsProxy *p)
     g_ptr_array_free (p->cf_domains, TRUE);
     g_ptr_array_free (p->worker_domains, TRUE);
     g_free (p->fake_tls_domain);
+    g_free (p->upstream_host);
     g_hash_table_destroy (p->client_fds);
     g_mutex_clear (&p->conns_lock);
     g_hash_table_destroy (p->bad_peers);

@@ -35,11 +35,13 @@ struct _TgwsProxy {
     GThread *listen_thread;
     volatile gint running;
 
+    char *upstream_host;        /* SOCKS5 to reach the data centres through; NULL = straight out */
+    guint16 upstream_port;
     int max_conns;              /* cap on concurrent client connections; 0 = unlimited */
     volatile gint active_conns; /* live per-client threads (cap + join-on-stop) */
     volatile gint refills;      /* live pool-refill threads (join-on-stop) */
     GMutex conns_lock;
-    GHashTable *client_fds;     /* set of live client fds; shutdown() on stop to unblock reads */
+    GHashTable *client_fds;     /* fd -> TgwsConnInfo for every live client; shutdown() on stop to unblock reads */
 
     /* A client left with a stale secret retries forever, hundreds of times a
      * second, and every attempt costs a thread and a log line. Failures are
@@ -59,6 +61,12 @@ struct _TgwsProxy {
 };
 
 /* Accumulate live stats (thread-safe). */
+/* Credit one connection with what it moved, beside the engine's totals. */
+void conn_add_bytes (TgwsProxy *p, int fd, gint64 up, gint64 down);
+/* What the handshake asked for, and how it is being reached. */
+void conn_note_dc (TgwsProxy *p, int fd, int dc, gboolean media);
+void conn_note_route (TgwsProxy *p, int fd, const char *route);
+
 void stats_add (TgwsProxy *p, gint64 d_total, gint64 d_active,
                 gint64 d_up, gint64 d_down);
 

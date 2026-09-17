@@ -45,6 +45,8 @@ void
 bridge (TgwsProxy *p, ClientIO *cio, WsConn *ws, CryptoCtx *ctx,
         MsgSplitter *splitter, const char *route)
 {
+    conn_note_route (p, cio->fd, route);
+
     gboolean err_reported = FALSE;
     unsigned char *inbuf = g_malloc (READ_CHUNK);
     unsigned char *plain = g_malloc (READ_CHUNK);
@@ -83,6 +85,7 @@ bridge (TgwsProxy *p, ClientIO *cio, WsConn *ws, CryptoCtx *ctx,
                 tgws_aesctr_update (ctx->clt_dec, inbuf, plain, (int) n);
                 tgws_aesctr_update (ctx->tg_enc, plain, cipher, (int) n);
                 stats_add (p, 0, 0, n, 0);
+                conn_add_bytes (p, cio->fd, n, 0);
 
                 GPtrArray *parts = g_ptr_array_new_with_free_func (
                     (GDestroyNotify) g_bytes_unref);
@@ -115,6 +118,7 @@ bridge (TgwsProxy *p, ClientIO *cio, WsConn *ws, CryptoCtx *ctx,
                     note_transport_error (p1, dlen, route, &err_reported);
                     tgws_aesctr_update (ctx->clt_enc, p1, p2, (int) dlen);
                     stats_add (p, 0, 0, 0, (gint64) dlen);
+                    conn_add_bytes (p, cio->fd, 0, (gint64) dlen);
                     if (!cio_write_all (cio, p2, dlen))
                         alive = FALSE;
                     g_free (p1);
@@ -162,6 +166,7 @@ tcp_bridge (TgwsProxy *p, ClientIO *cio, int remote_fd, CryptoCtx *ctx)
                 tgws_aesctr_update (ctx->clt_dec, inbuf, p1, (int) n);
                 tgws_aesctr_update (ctx->tg_enc, p1, p2, (int) n);
                 stats_add (p, 0, 0, n, 0);
+                conn_add_bytes (p, cio->fd, n, 0);
                 if (!fd_write_all (remote_fd, p2, n))
                     alive = FALSE;
             }
@@ -175,6 +180,7 @@ tcp_bridge (TgwsProxy *p, ClientIO *cio, int remote_fd, CryptoCtx *ctx)
                 note_transport_error (p1, (gsize) n, "tcp", &err_reported);
                 tgws_aesctr_update (ctx->clt_enc, p1, p2, (int) n);
                 stats_add (p, 0, 0, 0, n);
+                conn_add_bytes (p, cio->fd, 0, n);
                 if (!cio_write_all (cio, p2, n))
                     alive = FALSE;
             }

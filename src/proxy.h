@@ -56,6 +56,15 @@ TGWS_PUBLIC void tgws_proxy_set_pool_size (TgwsProxy *self, int size);
 TGWS_PUBLIC void tgws_proxy_set_max_conns (TgwsProxy *self, int max_conns);
 
 /* Bind + listen + spawn the accept thread. Returns FALSE on bind/listen error. */
+/* Reach Telegram through a SOCKS5 proxy rather than straight out.
+ *
+ * For a network that only lets named things through: the proxy is of no use if
+ * it cannot reach the data centres itself, and pointing it at a tunnel that can
+ * is the way out. host NULL or empty goes back to connecting directly. Set
+ * before start; it takes effect for connections opened after it. */
+TGWS_PUBLIC void tgws_proxy_set_upstream_socks (TgwsProxy *self,
+                                                const char *host, guint16 port);
+
 TGWS_PUBLIC gboolean tgws_proxy_start (TgwsProxy *self);
 
 /* Stop accepting and tear the listener down (in-flight sessions drain). */
@@ -70,6 +79,30 @@ TGWS_PUBLIC gint64 tgws_proxy_bytes_down (TgwsProxy *self);
  * secret. A steadily rising count means a client is still configured with an old
  * one; the engine throttles it, but only the user can fix it. */
 TGWS_PUBLIC gint64 tgws_proxy_bad_handshakes (TgwsProxy *self);
+
+/* One live client connection, as the engine sees it.
+ *
+ * The totals above answer "how much"; a front end that wants to show who is on
+ * the proxy and where their traffic is going needs this instead. Fixed-size
+ * fields so that the whole snapshot is one allocation the caller frees once. */
+typedef struct
+{
+    char     peer[64];      /* the client's address */
+    int      dc;            /* Telegram data centre it asked for */
+    gboolean media;         /* its media cluster rather than the main one */
+    char     route[64];     /* how it is being reached: "direct dc2",
+                               "cf-worker dc4 media", "tcp dc2" ... */
+    gint64   up;            /* bytes from the client so far */
+    gint64   down;          /* bytes to the client so far */
+    gint64   since_us;      /* monotonic time it was accepted at */
+} TgwsConnInfo;
+
+/* A snapshot of the connections open right now.
+ *
+ * Returns a newly allocated array of *n_out entries, which the caller frees
+ * with g_free(). Taken under the engine's own lock, so it is a moment rather
+ * than a live view: a connection may close while it is being read. */
+TGWS_PUBLIC TgwsConnInfo *tgws_proxy_connections (TgwsProxy *self, gsize *n_out);
 
 TGWS_PUBLIC void tgws_proxy_free (TgwsProxy *self);
 
