@@ -761,9 +761,20 @@ void tgws_proxy_set_fake_tls (TgwsProxy *p, const char *domain)
 static int
 open_listener (TgwsProxy *p, gboolean quiet)
 {
+    /* Closed on exec, so that a process this application starts later does not
+     * inherit the listener. Without it the socket lived on inside every child
+     * -- a browser's helpers among them -- and the port stayed taken after the
+     * proxy had stopped, by processes that have nothing to do with it. */
+#ifdef SOCK_CLOEXEC
+    int fd = socket (AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+#else
     int fd = socket (AF_INET, SOCK_STREAM, 0);
+#endif
     if (fd < 0)
         return -1;
+#if !defined (SOCK_CLOEXEC) && defined (FD_CLOEXEC)
+    fcntl (fd, F_SETFD, fcntl (fd, F_GETFD, 0) | FD_CLOEXEC);
+#endif
     int one = 1;
     setsockopt (fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof (one));
 
